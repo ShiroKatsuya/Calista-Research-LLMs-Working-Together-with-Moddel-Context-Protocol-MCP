@@ -3,12 +3,16 @@ from minions.minion import Minion
 import argparse
 # from voice import voice
 import sys
+from typing import Dict, Any, Set
 
 
-
-
-def main(task):
-
+def main(task: str) -> None:
+    """
+    Main function to run the minion conversation system with a given task.
+    
+    Args:
+        task: The task/question to be answered by the minion system
+    """
     # Add command line arguments for display options
     parser = argparse.ArgumentParser(description='Run minions conversation with display options')
     parser.add_argument('--full-messages', action='store_true', help='Display full messages without truncation')
@@ -28,7 +32,6 @@ def main(task):
 
     # Instantiate the Minion object with both clients
     minion = Minion(local_client, remote_client)
-
 
     context = """
     You are participating in a two-agent AI collaboration system with these roles:
@@ -51,9 +54,6 @@ def main(task):
     Remember that you're working as a team to solve the given task, and neither agent has complete information alone.
     """
 
-    # The task to be performed
-    task = task
-
     # Execute the minion protocol for up to five communication rounds
     output = minion(
         task=task,
@@ -61,73 +61,108 @@ def main(task):
         max_rounds=5
     )
 
-    # Define ANSI color codes for terminal output
-    class Colors:
-        BLUE = '\033[94m'
-        GREEN = '\033[92m'
-        YELLOW = '\033[93m'
-        RED = '\033[91m'
-        BOLD = '\033[1m'
-        UNDERLINE = '\033[4m'
-        END = '\033[0m'
+    # Display the conversation using the formatted output
+    display_conversation(output, args)
 
-    # Function to apply colors if enabled
-    def colorize(text, color):
-        if args.no_color:
-            return text
-        return color + text + Colors.END
 
-    # Helper function to clean content by removing Task and Instructions sections
-    def clean_content(content):
-        lines = content.split('\n')
-        cleaned_lines = []
-        skip_section = False
+class Colors:
+    """ANSI color codes for terminal output formatting."""
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+
+def colorize(text: str, color: str) -> str:
+    """Apply color formatting to text if enabled.
+    
+    Args:
+        text: The text to colorize
+        color: The ANSI color code to apply
         
-        for line in lines:
-            if line.strip().startswith('### Task') or line.strip().startswith('### Instructions'):
-                skip_section = True
-            elif line.strip().startswith('###'):
-                skip_section = False
-                cleaned_lines.append(line)
-            elif line.strip().startswith('```json'):
-                skip_section = True
-            elif line.strip().startswith('```') and skip_section:
-                skip_section = False
-            elif not skip_section:
-                cleaned_lines.append(line)
+    Returns:
+        Colorized text or plain text if colors are disabled
+    """
+    if getattr(colorize, 'no_color', False):
+        return text
+    return color + text + Colors.END
+
+
+def clean_content(content: str) -> str:
+    """Remove Task and Instructions sections from message content.
+    
+    Args:
+        content: The raw message content
+        
+    Returns:
+        Cleaned content with sections removed
+    """
+    lines = content.split('\n')
+    cleaned_lines = []
+    skip_section = False
+    
+    for line in lines:
+        if line.strip().startswith('### Task') or line.strip().startswith('### Instructions'):
+            skip_section = True
+        elif line.strip().startswith('###'):
+            skip_section = False
+            cleaned_lines.append(line)
+        elif line.strip().startswith('```json'):
+            skip_section = True
+        elif line.strip().startswith('```') and skip_section:
+            skip_section = False
+        elif not skip_section:
+            cleaned_lines.append(line)
             
-        
-        return '\n'.join(cleaned_lines)
+    return '\n'.join(cleaned_lines)
 
-    # Display the conversation in a clearer, interactive format
+
+def truncate_content(content: str, max_length: int, full_messages: bool) -> str:
+    """Truncate content if needed and add ellipsis.
+    
+    Args:
+        content: Content to potentially truncate
+        max_length: Maximum length before truncation
+        full_messages: Flag to show full messages
+        
+    Returns:
+        Truncated or full content string
+    """
+    if len(content) > max_length and not full_messages:
+        return f"{content.strip()[:max_length]}...\n(Use --full-messages to see complete content)"
+    return content.strip()
+
+
+def display_conversation(output: Dict[str, Any], args) -> None:
+    """Display the conversation in a clearer, interactive format.
+    
+    Args:
+        output: The output dictionary from the minion call
+        args: Command-line arguments
+    """
+    # Set the no_color attribute for the colorize function
+    colorize.no_color = args.no_color
+    
     print("\n" + colorize("=== CONVERSATION HISTORY ===", Colors.BOLD + Colors.UNDERLINE) + "\n")
 
-    # Process the messages to create a more interactive conversation
-    conversation = []
+    # Track used questions and answers to prevent duplication
+    used_questions: Set[str] = set()
+    used_answers: Set[str] = set()
+    
     supervisor_messages = output["supervisor_messages"]
     worker_messages = output["worker_messages"]
 
-    # Track used questions and answers to prevent duplication
-    used_questions = set()
-    used_answers = set()
-
-    # Skip the system message in worker_messages
-    if len(worker_messages) > 0 and worker_messages[0]["role"] == "system":
+    # Skip the system message in worker_messages if present
+    if worker_messages and worker_messages[0]["role"] == "system":
         worker_messages = worker_messages[1:]
 
     # Process the initial task
-    if supervisor_messages and len(supervisor_messages) > 0:
-        initial_task = supervisor_messages[0]["content"]
-        print(colorize("🔷 INITIAL TASK:", Colors.BOLD + Colors.BLUE))
-        print("-" * 80)
-        initial_content = clean_content(initial_task)
-        if len(initial_content) > 200 and not args.full_messages:
-            print(f"{initial_content.strip()[:200]}...\n(Use --full-messages to see complete content)")
-        else:
-            print(f"{initial_content.strip()}")
-        print("-" * 80 + "\n")
-        
-        # Skip the initial task in supervisor_messages for the rest of the processing
+    if supervisor_messages:
+        display_initial_task(supervisor_messages[0]["content"], args.full_messages)
+        # Skip the initial task in supervisor_messages
         supervisor_messages = supervisor_messages[1:]
 
     # Create an interleaved conversation
@@ -140,89 +175,11 @@ def main(task):
         # Track if any content was shown in this round
         round_has_content = False
         
-        # Supervisor asks (if there's a question at this point)
-        if idx < len(supervisor_messages) and supervisor_messages[idx]["role"] == "assistant":
-            content = clean_content(supervisor_messages[idx]["content"])
-            
-            # Check if this is a duplicate question
-            content_key = content.strip()[:100]  # Use first 100 chars as key to avoid minor differences
-            if content_key not in used_questions:
-                used_questions.add(content_key)
-                print(colorize("Supervisor (Remote) asks:", Colors.BOLD + Colors.BLUE))
-                
-                if len(content) > 300 and not args.full_messages:
-                    print(f"{content.strip()[:300]}...\n(Use --full-messages to see complete content)")
-                else:
-                    print(f"{content.strip()}")
-                print()
-                round_has_content = True
-            # voice(content)
-        
-        # Worker answers (if there's an answer at this point)
-        if idx < len(worker_messages) and worker_messages[idx]["role"] == "assistant":
-            content = clean_content(worker_messages[idx]["content"])
-            
-            # Check if this is a duplicate answer
-            content_key = content.strip()[:100]  # Use first 100 chars as key to avoid minor differences
-            if content_key not in used_answers:
-                used_answers.add(content_key)
-                # Emphasize worker contributions with special formatting and an icon
-                print(colorize("★ Worker (Local) answers: ★", Colors.BOLD + Colors.GREEN + Colors.UNDERLINE))
-                
-                # Highlight worker's direct thoughts with even more emphasis
-                if "⚡ I think" in content or "⚡ In my opinion" in content or "⚡ my analysis" in content:
-                    # Apply additional formatting to direct worker contributions
-                    content = content.replace("⚡ I think", colorize("⚡ I think", Colors.BOLD + Colors.YELLOW))
-                    content = content.replace("⚡ In my opinion", colorize("⚡ In my opinion", Colors.BOLD + Colors.YELLOW))
-                    content = content.replace("⚡ my analysis", colorize("⚡ my analysis", Colors.BOLD + Colors.YELLOW))
-                
-                if len(content) > 300 and not args.full_messages:
-                    print(f"{content.strip()[:300]}...\n(Use --full-messages to see complete content)")
-                else:
-                    print(f"{content.strip()}")
-                print()
-                round_has_content = True
-        
-        # Worker asks (if there's a next question from worker)
-        if idx + 1 < len(worker_messages) and worker_messages[idx + 1]["role"] == "user":
-            content = clean_content(worker_messages[idx + 1]["content"])
-            
-            # Check if this is a duplicate question
-            content_key = content.strip()[:100]  # Use first 100 chars as key to avoid minor differences
-            if content_key not in used_questions:
-                used_questions.add(content_key)
-                
-                # Emphasize worker-initiated questions with even more prominence
-                if "★ WORKER QUESTION ★" in content:
-                    print(colorize("★★★ Worker-Initiated Question ★★★", Colors.BOLD + Colors.GREEN + Colors.UNDERLINE))
-                    # Special formatting for worker questions to make them more noticeable
-                    content = content.replace("★ WORKER QUESTION ★: ", "")
-                else:
-                    # Regular worker question (responding to supervisor)
-                    print(colorize("★ Worker (Local) asks: ★", Colors.BOLD + Colors.GREEN + Colors.UNDERLINE))
-                
-                if len(content) > 300 and not args.full_messages:
-                    print(f"{content.strip()[:300]}...\n(Use --full-messages to see complete content)")
-                else:
-                    print(f"{content.strip()}")
-                print()
-                round_has_content = True
-        
-        # Supervisor answers (if there's a next answer from supervisor)
-        if idx + 1 < len(supervisor_messages) and supervisor_messages[idx + 1]["role"] == "user":
-            content = clean_content(supervisor_messages[idx + 1]["content"])
-            
-            # Check if this is a duplicate answer
-            content_key = content.strip()[:100]  # Use first 100 chars as key to avoid minor differences
-            if content_key not in used_answers:
-                used_answers.add(content_key)
-                print(colorize("Supervisor (Remote) answers:", Colors.BOLD + Colors.BLUE))
-                if len(content) > 300 and not args.full_messages:
-                    print(f"{content.strip()[:300]}...\n(Use --full-messages to see complete content)")
-                else:
-                    print(f"{content.strip()}")
-                print()
-                round_has_content = True
+        # Process messages in this round
+        round_has_content |= process_supervisor_question(supervisor_messages, idx, used_questions, args.full_messages)
+        round_has_content |= process_worker_answer(worker_messages, idx, used_answers, args.full_messages)
+        round_has_content |= process_worker_question(worker_messages, idx + 1, used_questions, args.full_messages)
+        round_has_content |= process_supervisor_answer(supervisor_messages, idx + 1, used_answers, args.full_messages)
         
         # Only increment round number if the round had content
         if round_has_content:
@@ -231,13 +188,124 @@ def main(task):
             
         idx += 2  # Move to next pair of messages
 
-    # Print the final answer with clear separation
+    # Print the final answer
     print("\n" + colorize("=" * 30 + " FINAL ANSWER " + "=" * 30, Colors.BOLD + Colors.RED))
     print(output["final_answer"])
     print("=" * 80)
 
-    # Print a helpful message about command-line options
+    # Print helpful message about command-line options
     print("\nTIP: Run with --full-messages to see complete messages without truncation")
     print("     Run with --no-color to disable colored output")
 
-main("What is the capital of France?")
+
+def display_initial_task(task_content: str, full_messages: bool) -> None:
+    """Display the initial task given to the minion system.
+    
+    Args:
+        task_content: The content of the initial task
+        full_messages: Flag to show full messages
+    """
+    print(colorize("🔷 INITIAL TASK:", Colors.BOLD + Colors.BLUE))
+    print("-" * 80)
+    initial_content = clean_content(task_content)
+    print(truncate_content(initial_content, 200, full_messages))
+    print("-" * 80 + "\n")
+
+
+def process_supervisor_question(supervisor_messages, idx, used_questions, full_messages):
+    """Process and display a supervisor question if it exists and is unique.
+    
+    Returns:
+        Boolean indicating if content was shown
+    """
+    if idx < len(supervisor_messages) and supervisor_messages[idx]["role"] == "assistant":
+        content = clean_content(supervisor_messages[idx]["content"])
+        
+        # Check if this is a duplicate question
+        content_key = content.strip()[:100]  # Use first 100 chars as key
+        if content_key not in used_questions:
+            used_questions.add(content_key)
+            print(colorize("Supervisor (Remote) asks:", Colors.BOLD + Colors.BLUE))
+            print(truncate_content(content, 300, full_messages))
+            print()
+            return True
+    return False
+
+
+def process_worker_answer(worker_messages, idx, used_answers, full_messages):
+    """Process and display a worker answer if it exists and is unique.
+    
+    Returns:
+        Boolean indicating if content was shown
+    """
+    if idx < len(worker_messages) and worker_messages[idx]["role"] == "assistant":
+        content = clean_content(worker_messages[idx]["content"])
+        
+        # Check if this is a duplicate answer
+        content_key = content.strip()[:100]  # Use first 100 chars as key
+        if content_key not in used_answers:
+            used_answers.add(content_key)
+            print(colorize("★ Worker (Local) answers: ★", Colors.BOLD + Colors.GREEN + Colors.UNDERLINE))
+            
+            # Highlight worker's direct thoughts with emphasis
+            highlight_phrases = ["⚡ I think", "⚡ In my opinion", "⚡ my analysis"]
+            for phrase in highlight_phrases:
+                base_phrase = phrase.replace("⚡ ", "")
+                content = content.replace(base_phrase, colorize(phrase, Colors.BOLD + Colors.YELLOW))
+            
+            print(truncate_content(content, 300, full_messages))
+            print()
+            return True
+    return False
+
+
+def process_worker_question(worker_messages, idx, used_questions, full_messages):
+    """Process and display a worker question if it exists and is unique.
+    
+    Returns:
+        Boolean indicating if content was shown
+    """
+    if idx < len(worker_messages) and worker_messages[idx]["role"] == "user":
+        content = clean_content(worker_messages[idx]["content"])
+        
+        # Check if this is a duplicate question
+        content_key = content.strip()[:100]  # Use first 100 chars as key
+        if content_key not in used_questions:
+            used_questions.add(content_key)
+            
+            if "★ WORKER QUESTION ★" in content:
+                print(colorize("★★★ Worker-Initiated Question ★★★", Colors.BOLD + Colors.GREEN + Colors.UNDERLINE))
+                # Remove the special marker
+                content = content.replace("★ WORKER QUESTION ★: ", "")
+            else:
+                print(colorize("★ Worker (Local) asks: ★", Colors.BOLD + Colors.GREEN + Colors.UNDERLINE))
+            
+            print(truncate_content(content, 300, full_messages))
+            print()
+            return True
+    return False
+
+
+def process_supervisor_answer(supervisor_messages, idx, used_answers, full_messages):
+    """Process and display a supervisor answer if it exists and is unique.
+    
+    Returns:
+        Boolean indicating if content was shown
+    """
+    if idx < len(supervisor_messages) and supervisor_messages[idx]["role"] == "user":
+        content = clean_content(supervisor_messages[idx]["content"])
+        
+        # Check if this is a duplicate answer
+        content_key = content.strip()[:100]  # Use first 100 chars as key
+        if content_key not in used_answers:
+            used_answers.add(content_key)
+            print(colorize("Supervisor (Remote) answers:", Colors.BOLD + Colors.BLUE))
+            print(truncate_content(content, 300, full_messages))
+            print()
+            return True
+    return False
+
+
+if __name__ == "__main__":
+    # Example task if no arguments provided
+    main("What is the capital of France?")
