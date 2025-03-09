@@ -3,11 +3,15 @@ from tkinter import messagebox
 import sys
 import threading
 import traceback
+import time
 from datetime import datetime
 from contextlib import redirect_stdout
 # Don't import VoiceCallApp directly to avoid circular import
 from message_handlers import MessageHandlers
 from redirector import StdoutRedirector
+from ui_components import UIComponents
+import os
+import math
 
 class CallHandlers:
     # Class-level list to track app instances (moved from VoiceCallApp)
@@ -17,62 +21,95 @@ class CallHandlers:
     worker_conversation = []
     supervisor_conversation = []
     
+    # Animation constants
+    PULSE_DURATION = 50  # ms between animation frames
+    PULSE_CYCLES = 10    # number of cycles for pulse animation
+    TYPING_DELAY = 50    # ms between characters when typing animation
+    
     @staticmethod
     def print_to_terminal(message, sender=None, is_system=False):
-        """Print a message to the terminal without any truncation."""
-        # Store in conversation history
-        if sender == "Worker":
-            CallHandlers.worker_conversation.append(message)
-        elif sender == "Supervisor":
-            CallHandlers.supervisor_conversation.append(message)
-        
-        # Add appropriate prefix/formatting
+        """Print a message to the terminal with proper formatting."""
+        # Setup message formatting based on sender
         if is_system:
-            print(f"\n[SYSTEM] {message}\n")
-        elif sender == "Worker":
-            print(f"\n👨‍💻 Worker says:\n{message}\n")
-        elif sender == "Supervisor":
-            print(f"\n👩‍💼 Supervisor says:\n{message}\n")
+            prefix = f"{MessageHandlers.SYSTEM_EMOJI} System: "
+            tag = "system_message"
+            # Add to both conversation histories
+            CallHandlers.worker_conversation.append(f"[SYSTEM] {message}")
+            CallHandlers.supervisor_conversation.append(f"[SYSTEM] {message}")
+        elif sender == "worker":
+            prefix = f"{MessageHandlers.WORKER_EMOJI} Worker: "
+            tag = "worker_message"
+            # Add to worker conversation
+            CallHandlers.worker_conversation.append(f"[WORKER] {message}")
+        elif sender == "supervisor":
+            prefix = f"{MessageHandlers.SUPERVISOR_EMOJI} Supervisor: "
+            tag = "supervisor_message"
+            # Add to supervisor conversation
+            CallHandlers.supervisor_conversation.append(f"[SUPERVISOR] {message}")
         else:
-            print(f"\n{message}\n")
+            prefix = ""
+            tag = ""
+            
+        # Timestamp the message
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {prefix}{message}\n"
+        
+        # Print to minion terminal if exists
+        for app in CallHandlers.instances:
+            if hasattr(app, 'minion_terminal') and app.minion_terminal is not None:
+                app.minion_terminal.output_text.configure(state=tk.NORMAL)
+                app.minion_terminal.output_text.insert(tk.END, formatted_message, tag)
+                app.minion_terminal.output_text.see(tk.END)
+                app.minion_terminal.output_text.configure(state=tk.DISABLED)
     
     @staticmethod
     def print_full_conversation():
-        """Print the entire conversation history to the terminal."""
-        print("\n" + "=" * 80)
-        print("FULL CONVERSATION HISTORY")
-        print("=" * 80)
+        """Print the full conversation history to the terminal."""
+        # Create a visual separator
+        separator = f"\n{'-' * 50}\n"
         
-        # Print messages in chronological order with proper formatting
-        for i in range(max(len(CallHandlers.worker_conversation), len(CallHandlers.supervisor_conversation))):
-            # Print worker message if available
-            if i < len(CallHandlers.worker_conversation):
-                print(f"\n👨‍💻 Worker says:\n{CallHandlers.worker_conversation[i]}\n")
-                print("-" * 40)
-            
-            # Print supervisor message if available
-            if i < len(CallHandlers.supervisor_conversation):
-                print(f"\n👩‍💼 Supervisor says:\n{CallHandlers.supervisor_conversation[i]}\n")
-                print("-" * 40)
+        # Define header with timestamp and emojis
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        header = f"{MessageHandlers.SYSTEM_EMOJI} CONVERSATION HISTORY ({timestamp}) {MessageHandlers.SYSTEM_EMOJI}\n"
         
-        print("=" * 80 + "\n")
+        # Print worker conversation
+        worker_header = f"{MessageHandlers.WORKER_EMOJI} WORKER CONVERSATION {MessageHandlers.WORKER_EMOJI}\n"
+        worker_content = "\n".join(CallHandlers.worker_conversation)
+        
+        # Print supervisor conversation  
+        supervisor_header = f"{MessageHandlers.SUPERVISOR_EMOJI} SUPERVISOR CONVERSATION {MessageHandlers.SUPERVISOR_EMOJI}\n"
+        supervisor_content = "\n".join(CallHandlers.supervisor_conversation)
+        
+        # Format the full output with visual elements
+        full_output = (
+            f"{separator}{header}{separator}"
+            f"{worker_header}{separator}{worker_content}\n{separator}"
+            f"{supervisor_header}{separator}{supervisor_content}\n{separator}"
+        )
+        
+        # Print to minion terminal if it exists
+        for app in CallHandlers.instances:
+            if hasattr(app, 'minion_terminal') and app.minion_terminal is not None:
+                app.minion_terminal.output_text.configure(state=tk.NORMAL)
+                app.minion_terminal.output_text.insert(tk.END, full_output)
+                app.minion_terminal.output_text.see(tk.END)
+                app.minion_terminal.output_text.configure(state=tk.DISABLED)
+                
+                # Update status to show completion
+                app.minion_terminal.update_status("Conversation history displayed", "#3498db")
     
     @staticmethod
     def toggle_call(app, event=None):
-        """Toggle call state."""
+        """Toggle between starting and ending a call."""
         if app.call_active:
             CallHandlers.end_call(app)
         else:
             CallHandlers.start_call(app)
-
+    
     @staticmethod
     def start_call(app):
         """Start a call with another instance."""
-        # Don't start if already on a call
-        if app.call_active:
-            return
-        
-        # Clear conversation tracking at the start of a new call
+        # Clear previous conversations
         CallHandlers.worker_conversation = []
         CallHandlers.supervisor_conversation = []
         
@@ -90,700 +127,792 @@ class CallHandlers:
             if not input_text:
                 messagebox.showwarning("Input Required", "Please type a message before starting the call.")
                 return
-                
-            # Clear the input field after getting text
-            app.text_entry.delete("1.0", tk.END)
             
-            # Process the input in a separate thread to avoid blocking the UI
-            def process_input():
-                try:
-                    # Create a custom redirector to capture output
-                    class ConversationOutputRedirector:
-                        def __init__(self, app_instance):
-                            self.app_instance = app_instance
-                            self.buffer = ""
-                            self.full_output = []  # Store all output for complete display
-                            
-                        def write(self, string):
-                            # Always save the complete raw output
-                            self.full_output.append(string)
-                            
-                            # Also process line by line for UI updates
-                            self.buffer += string
-                            if '\n' in string:
-                                lines = self.buffer.split('\n')
-                                # Process all complete lines except the last (which might be incomplete)
-                                for line in lines[:-1]:
-                                    self._process_line(line)
-                                # Keep the last (potentially incomplete) line in the buffer
-                                self.buffer = lines[-1]
-                            
-                        def _process_line(self, line):
-                            if not line.strip():
-                                return  # Skip empty lines
-                                
-                            # Print the raw line to terminal without processing
-                            # This ensures nothing is cut off
-                            print(line)
-                                
-                            # Process for UI updates (run in non-blocking way)
-                            app = self.app_instance
-                            
-                            # Use try/except to prevent freezing if UI update fails
-                            try:
-                                # Process based on line content
-                                if "Supervisor (Remote) is thinking" in line:
-                                    # Show supervisor thinking state in both apps
-                                    app.root.after(0, lambda: MessageHandlers.show_thinking_in_response(app, True))
-                                    if app.connected_to:
-                                        app.connected_to.root.after(0, lambda: MessageHandlers.show_thinking_in_response(app.connected_to, True))
-                                
-                                elif "Worker (Local) is thinking" in line:
-                                    # Show worker thinking state in both apps
-                                    app.root.after(0, lambda: MessageHandlers.show_thinking_in_response(app, True))
-                                    if app.connected_to:
-                                        app.connected_to.root.after(0, lambda: MessageHandlers.show_thinking_in_response(app.connected_to, True))
-                                
-                                elif line.startswith("@Worker:"):
-                                    # Worker message - parse and store
-                                    message = line.replace("@Worker:", "").strip()
-                                    CallHandlers.worker_conversation.append(message)
-                                    
-                                    # Update UI safely in a non-blocking way
-                                    self._safe_ui_update_for_worker(message)
-                                
-                                elif line.startswith("@Supervisor:") or "Supervisor (Remote) answers:" in line:
-                                    # Supervisor message - parse and store
-                                    message = line.replace("@Supervisor:", "").replace("Supervisor (Remote) answers:", "").strip()
-                                    CallHandlers.supervisor_conversation.append(message)
-                                    
-                                    # Update UI safely in a non-blocking way
-                                    self._safe_ui_update_for_supervisor(message)
-                                
-                                elif "<|start_header_id|>" in line or "<|end_header_id|>" in line:
-                                    # Filter out header markers from the display
-                                    pass
-                                
-                                elif "⚡ I think" in line or "⚡ In my opinion" in line:
-                                    # Worker insights - highlight and store
-                                    CallHandlers.worker_conversation.append(line)
-                                    self._safe_ui_update_for_worker(line)
-                                
-                                else:
-                                    # General content - try to categorize
-                                    if "Worker (Local)" in line:
-                                        self._safe_ui_update_for_worker(line)
-                                    elif "Supervisor (Remote)" in line:
-                                        self._safe_ui_update_for_supervisor(line)
-                                    else:
-                                        # System message - display in both apps if not empty
-                                        content = line.strip()
-                                        if content:
-                                            self._safe_ui_update_for_system(content)
-                            except Exception as e:
-                                # Prevent UI freezing if an error occurs during processing
-                                print(f"Error processing line: {e}")
-                        
-                        def _safe_ui_update_for_worker(self, message):
-                            """Updates the worker app UI without blocking the main thread."""
-                            app = self.app_instance
-                            
-                            # Find the right apps
-                            worker_app = None
-                            supervisor_app = None
-                            
-                            for instance in CallHandlers.instances:
-                                if instance.model_label == "Worker (Local)":
-                                    worker_app = instance
-                                elif instance.model_label == "Supervisor (Remote)":
-                                    supervisor_app = instance
-                            
-                            # Schedule UI updates with delay to prevent flooding
-                            if worker_app:
-                                worker_app.root.after(10, lambda msg=message: 
-                                                   self._update_if_exists(worker_app, msg))
-                            
-                            if supervisor_app:
-                                supervisor_app.root.after(10, lambda msg=message: 
-                                                      self._update_if_exists(supervisor_app, f"Worker: {msg}"))
-                        
-                        def _safe_ui_update_for_supervisor(self, message):
-                            """Updates the supervisor app UI without blocking the main thread."""
-                            app = self.app_instance
-                            
-                            # Find the right apps
-                            worker_app = None
-                            supervisor_app = None
-                            
-                            for instance in CallHandlers.instances:
-                                if instance.model_label == "Worker (Local)":
-                                    worker_app = instance
-                                elif instance.model_label == "Supervisor (Remote)":
-                                    supervisor_app = instance
-                            
-                            # Schedule UI updates with delay to prevent flooding  
-                            if supervisor_app:
-                                supervisor_app.root.after(10, lambda msg=message: 
-                                                      self._update_if_exists(supervisor_app, msg))
-                            
-                            if worker_app:
-                                worker_app.root.after(10, lambda msg=message: 
-                                                   self._update_if_exists(worker_app, f"Supervisor: {msg}"))
-                        
-                        def _safe_ui_update_for_system(self, message):
-                            """Updates all apps with system messages without blocking."""
-                            for instance in CallHandlers.instances:
-                                if instance.root.winfo_exists():
-                                    instance.root.after(10, lambda i=instance, msg=message: 
-                                                     self._update_if_exists(i, msg))
-                        
-                        def _update_if_exists(self, app, message):
-                            """Safe wrapper to update UI only if components still exist."""
-                            try:
-                                if app.root.winfo_exists() and hasattr(app, 'response_text') and app.response_text.winfo_exists():
-                                    MessageHandlers.append_to_response(app, message)
-                            except Exception as e:
-                                print(f"Error updating UI: {e}")
-                        
-                        def flush(self):
-                            # If there's anything left in the buffer, process it
-                            if self.buffer:
-                                self._process_line(self.buffer)
-                                self.buffer = ""
-                            
-                            # Print the complete raw output to terminal
-                            print("\n" + "=" * 80)
-                            print("COMPLETE RAW OUTPUT")
-                            print("=" * 80)
-                            for chunk in self.full_output:
-                                sys.stdout.write(chunk)
-                            print("=" * 80)
-                    
-                    # Use a try-finally structure to properly clean up resources
-                    import sys
-                    original_stdout = sys.stdout
-                    redirector = ConversationOutputRedirector(app)
-                    sys.stdout = redirector
-                    
-                    try:
-                        # Import main function here to avoid circular imports
-                        from main import main
-                        # Process the input text - add timeout mechanism
-                        main_thread = threading.Thread(target=lambda: main(input_text))
-                        main_thread.daemon = True  # Allow thread to be terminated when app closes
-                        main_thread.start()
-                        
-                        # Add a watchdog to check if processing is taking too long
-                        def check_processing_status():
-                            if main_thread.is_alive():
-                                # Still processing, update UI to show it's still working
-                                if app.root.winfo_exists():
-                                    app.status_label.config(text="Still processing...")
-                                    # Schedule another check
-                                    app.root.after(1000, check_processing_status)
-                            else:
-                                # Processing complete
-                                if app.root.winfo_exists():
-                                    app.status_label.config(text="Processing complete")
-                        
-                        # Start the watchdog after a short delay
-                        app.root.after(3000, check_processing_status)
-                        
-                    except Exception as e:
-                        print(f"Error processing input: {e}")
-                        traceback.print_exc()  # Print stack trace for debugging
-                        if hasattr(app, 'status_label') and app.root.winfo_exists():
-                            app.status_label.config(text=f"Error: {str(e)}")
-                    finally:
-                        # Always restore stdout, but do it in the main thread
-                        app.root.after(0, lambda: setattr(sys, 'stdout', original_stdout))
-                        # Flush any remaining content
-                        app.root.after(0, redirector.flush)
-                except Exception as e:
-                    # Outer exception handler for the entire process_input function
-                    print(f"Fatal error in process_input: {e}")
-                    traceback.print_exc()
-                    if hasattr(app, 'status_label') and app.root.winfo_exists():
-                        app.status_label.config(text=f"Fatal error: {str(e)}")
+            # Find the other app instance to call
+            other_app = None
+            for instance in app.__class__.instances:
+                if instance != app:
+                    other_app = instance
+                    break
             
-            # Start a thread to process the input
-            input_thread = threading.Thread(target=process_input)
-            input_thread.daemon = True
-            input_thread.start()
-        
-        # Update UI to show connecting state
-        app.status_label.config(text="Connecting...")
-        
-        # Update status indicator to yellow (connecting)
-        if hasattr(app, 'status_indicator'):
-            app.status_indicator.itemconfig("indicator", fill="#FFC107")
+            if other_app is None:
+                messagebox.showerror("Error", "No other app instance found to call.")
+                return
             
-            # Create pulsing effect for connecting indicator
-            def pulse_indicator():
-                if not app.call_active or not app.status_indicator.winfo_exists():
-                    return
-                current_fill = app.status_indicator.itemcget("indicator", "fill")
-                new_fill = "#FFA000" if current_fill == "#FFC107" else "#FFC107"
-                app.status_indicator.itemconfig("indicator", fill=new_fill)
-                app.root.after(500, pulse_indicator)
-                
-            app.root.after(100, pulse_indicator)
-        
-        # Hide start button, show stop button
-        app.start_call_button.pack_forget()
-        app.stop_call_button.pack(pady=10)
-        
-        # Show the duration label
-        app.duration_label.pack()
-        app.call_duration = 0
-        app.duration_label.config(text="00:00")
-        
-        # Set the call active flag
-        app.call_active = True
-        app.is_thinking = True
-        
-        # Show thinking state in this app
-        MessageHandlers.show_thinking_in_response(app, True)
-        
-        if app.connected_to:
-            MessageHandlers.show_thinking_in_response(app.connected_to, True)
+            # Show calling interface with WhatsApp-style ringing animation
+            CallHandlers._show_calling_interface(app, other_app, input_text)
             
-        # Get current timestamp
-        import datetime
-        current_time = datetime.datetime.now().strftime("%H:%M:%S")
+            # The rest of the logic will continue in _show_calling_interface
+        else:
+            messagebox.showerror("Error", "Text entry not found")
+    
+    @staticmethod
+    def _show_calling_interface(app, other_app, input_text):
+        """Display a WhatsApp-style calling interface with ringing animation."""
+        # Save the input text for later processing
+        app.pending_message = input_text
         
-        # Add a call start message with proper icon and timestamp
-        app.response_text.config(state=tk.NORMAL)
-        if MessageHandlers.preserve_history and app.response_text.get("1.0", tk.END).strip():
-            app.response_text.insert(tk.END, "\n\n" + "═" * 60 + "\n\n", "separator")
-        app.response_text.insert(tk.END, f"[{current_time}] {MessageHandlers.CALL_EMOJI} Call starting...\n", "system_header")
-        app.response_text.config(state=tk.DISABLED)
+        # Create a calling overlay
+        app.calling_overlay = tk.Toplevel(app.root)
+        app.calling_overlay.title("Calling")
+        app.calling_overlay.geometry("300x450")
+        app.calling_overlay.configure(bg=UIComponents.DARK_BG)
+        app.calling_overlay.transient(app.root)  # Make it appear related to main window
         
-        # Make sure the call message is visible
-        MessageHandlers._ensure_autoscroll(app)
+        # Center the overlay relative to the app window
+        app.root.update_idletasks()
+        x = app.root.winfo_rootx() + (app.root.winfo_width() // 2) - 150
+        y = app.root.winfo_rooty() + (app.root.winfo_height() // 2) - 225
+        app.calling_overlay.geometry(f"+{x}+{y}")
         
-        # Update UI in button to show active call
-        if hasattr(app, 'call_button_frame'):
-            for widget in app.call_button_frame.winfo_children():
-                if isinstance(widget, tk.Canvas):
-                    widget.itemconfig("button_bg", fill="#FF0000")  # Change to red for active call
-                    # Remove phone icon, add end call icon
-                    widget.delete("button_icon")
-                    widget.create_text(widget.winfo_width() // 2, 
-                                     widget.winfo_height() // 2, 
-                                     text="❌", 
-                                     font=("Segoe UI Emoji", widget.winfo_width() // 3), 
-                                     fill="white", 
-                                     tags="button_icon")
+        # Prevent closing with X button
+        app.calling_overlay.protocol("WM_DELETE_WINDOW", lambda: None)
         
-        # Start the timer to track call duration
-        app.root.after(1000, lambda: CallHandlers.update_duration(app))
+        # Add caller avatar and name at the top
+        avatar_frame = tk.Frame(app.calling_overlay, bg=UIComponents.DARK_BG)
+        avatar_frame.pack(pady=(40, 10))
         
-        # Find another instance to establish a connection and auto-accept
-        receiver_instance = None
-        for instance in CallHandlers.instances:
-            if instance != app and not instance.call_active:
-                receiver_instance = instance
-                # Connect the two apps
-                app.connected_to = instance
-                instance.connected_to = app
+        # Large circular avatar
+        avatar_size = 120
+        avatar_canvas = tk.Canvas(avatar_frame, width=avatar_size, height=avatar_size, 
+                               bg=UIComponents.DARK_BG, highlightthickness=0)
+        avatar_canvas.pack()
+        
+        # Draw avatar circle
+        avatar_canvas.create_oval(5, 5, avatar_size-5, avatar_size-5, 
+                               fill=UIComponents.PANEL_BG, outline=UIComponents.HIGHLIGHT_COLOR, width=2)
+        
+        # Add initials in the center
+        model_initials = other_app.model_label[0] if other_app.model_label else "S"
+        avatar_canvas.create_text(avatar_size//2, avatar_size//2, 
+                               text=model_initials, fill=UIComponents.TEXT_COLOR, 
+                               font=("Segoe UI", 36, "bold"))
+        
+        # Name label
+        name_label = tk.Label(app.calling_overlay, text=other_app.model_label,
+                           font=("Segoe UI", 20, "bold"), fg=UIComponents.TEXT_COLOR, bg=UIComponents.DARK_BG)
+        name_label.pack(pady=(10, 5))
+        
+        # Calling status label
+        app.calling_status = tk.Label(app.calling_overlay, text="Calling...",
+                                   font=("Segoe UI", 14), fg=UIComponents.INACTIVE_COLOR, bg=UIComponents.DARK_BG)
+        app.calling_status.pack(pady=5)
+        
+        # Add ringing animation
+        ring_canvas = tk.Canvas(app.calling_overlay, width=180, height=40, 
+                             bg=UIComponents.DARK_BG, highlightthickness=0)
+        ring_canvas.pack(pady=20)
+        
+        # Create wave bars for ringing animation
+        wave_bars = []
+        for i in range(5):
+            bar = ring_canvas.create_rectangle(
+                20 + i*30, 20, 40 + i*30, 20,
+                fill=UIComponents.HIGHLIGHT_COLOR, width=0
+            )
+            wave_bars.append(bar)
+        
+        # End call button (red circle)
+        button_frame = tk.Frame(app.calling_overlay, bg=UIComponents.DARK_BG)
+        button_frame.pack(side=tk.BOTTOM, pady=40)
+        
+        end_call_btn = tk.Canvas(button_frame, width=70, height=70, 
+                              bg=UIComponents.DARK_BG, highlightthickness=0)
+        end_call_btn.pack()
+        
+        # Red circle for end call
+        end_call_circle = end_call_btn.create_oval(5, 5, 65, 65, fill="#E53935", outline="")
+        end_call_phone = end_call_btn.create_text(35, 35, text="📞", font=("Segoe UI", 24), fill="white")
+        
+        # Bind end call action
+        end_call_btn.tag_bind(end_call_circle, "<Button-1>", 
+                           lambda e: CallHandlers._cancel_outgoing_call(app))
+        end_call_btn.tag_bind(end_call_phone, "<Button-1>", 
+                           lambda e: CallHandlers._cancel_outgoing_call(app))
+        
+        # Animate the wave bars
+        def animate_wave(step=0):
+            if not hasattr(app, 'calling_overlay') or not app.calling_overlay.winfo_exists():
+                return
                 
-                # Auto-accept the call in the receiving app
-                CallHandlers._auto_accept_call(instance, app)
-                break
-                
-        # If we found a receiver, establish the connection
-        if receiver_instance:
-            app.root.after(500, lambda: CallHandlers._establish_call(app, receiver_instance))
+            # Calculate heights for wave effect
+            heights = [
+                15 + 10 * abs(math.sin((step + i) / 2)),
+                15 + 10 * abs(math.sin((step + i + 2) / 2)),
+                15 + 10 * abs(math.sin((step + i + 4) / 2)),
+                15 + 10 * abs(math.sin((step + i + 6) / 2)),
+                15 + 10 * abs(math.sin((step + i + 8) / 2))
+            ]
+            
+            # Update each bar
+            for i, bar in enumerate(wave_bars):
+                ring_canvas.coords(bar, 20 + i*30, 40 - heights[i], 40 + i*30, 40)
+            
+            # Continue animation
+            app.calling_overlay.after(100, lambda: animate_wave(step + 1))
+        
+        # Start wave animation
+        animate_wave()
+        
+        # Auto-accept call in other app after delay (simulating WhatsApp behavior)
+        app.calling_overlay.after(2000, lambda: CallHandlers._auto_accept_call(other_app, app))
+
+    @staticmethod
+    def _cancel_outgoing_call(app):
+        """Cancel an outgoing call attempt."""
+        if hasattr(app, 'calling_overlay') and app.calling_overlay.winfo_exists():
+            app.calling_overlay.destroy()
+            delattr(app, 'calling_overlay')
+            
+        # Reset any call state
+        if app.__class__.waiting_call:
+            app.__class__.waiting_call = None
+        
+        # Notify the user
+        app.status_label.config(text="Call canceled")
+        
+        # Log to terminal
+        CallHandlers.print_to_terminal("Outgoing call canceled", is_system=True)
 
     @staticmethod
     def _auto_accept_call(receiving_app, calling_app):
-        """Automatically accept an incoming call in the receiving app."""
-        # Update status to show that call is connected
-        receiving_app.status_label.config(text="Call connected")
-        
-        # Update status indicator to green (active)
-        if hasattr(receiving_app, 'status_indicator'):
-            receiving_app.status_indicator.itemconfig("indicator", fill="#4CAF50")
+        """Auto-accept an incoming call after a short delay."""
+        # Check if the call was canceled
+        if not hasattr(calling_app, 'calling_overlay') or not calling_app.calling_overlay.winfo_exists():
+            return
             
-        # Update UI to show call is active
-        receiving_app.call_active = True
-        receiving_app.is_thinking = True
+        # Update the status text to show connecting
+        calling_app.calling_status.config(text="Connecting...")
+        
+        # Show incoming call notification in receiving app
+        CallHandlers._show_incoming_call(receiving_app, calling_app)
+        
+        # Auto accept after a delay (simulating auto-answer)
+        receiving_app.root.after(2000, lambda: CallHandlers._accept_incoming_call(receiving_app, calling_app))
+
+    @staticmethod
+    def _show_incoming_call(receiving_app, calling_app):
+        """Show an incoming call notification in WhatsApp style."""
+        # Create incoming call notification
+        receiving_app.incoming_overlay = tk.Toplevel(receiving_app.root)
+        receiving_app.incoming_overlay.title("Incoming Call")
+        receiving_app.incoming_overlay.geometry("300x450")
+        receiving_app.incoming_overlay.configure(bg=UIComponents.DARK_BG)
+        receiving_app.incoming_overlay.transient(receiving_app.root)
+        
+        # Center the overlay
+        receiving_app.root.update_idletasks()
+        x = receiving_app.root.winfo_rootx() + (receiving_app.root.winfo_width() // 2) - 150
+        y = receiving_app.root.winfo_rooty() + (receiving_app.root.winfo_height() // 2) - 225
+        receiving_app.incoming_overlay.geometry(f"+{x}+{y}")
+        
+        # Prevent closing with X button
+        receiving_app.incoming_overlay.protocol("WM_DELETE_WINDOW", lambda: None)
+        
+        # Add caller info
+        avatar_frame = tk.Frame(receiving_app.incoming_overlay, bg=UIComponents.DARK_BG)
+        avatar_frame.pack(pady=(40, 10))
+        
+        # Avatar
+        avatar_size = 120
+        avatar_canvas = tk.Canvas(avatar_frame, width=avatar_size, height=avatar_size, 
+                               bg=UIComponents.DARK_BG, highlightthickness=0)
+        avatar_canvas.pack()
+        
+        # Draw avatar
+        avatar_canvas.create_oval(5, 5, avatar_size-5, avatar_size-5, 
+                               fill=UIComponents.PANEL_BG, outline=UIComponents.HIGHLIGHT_COLOR, width=2)
+        
+        # Add initials
+        model_initials = calling_app.model_label[0] if calling_app.model_label else "W"
+        avatar_canvas.create_text(avatar_size//2, avatar_size//2, 
+                               text=model_initials, fill=UIComponents.TEXT_COLOR, 
+                               font=("Segoe UI", 36, "bold"))
+        
+        # Name and status
+        name_label = tk.Label(receiving_app.incoming_overlay, text=calling_app.model_label,
+                           font=("Segoe UI", 20, "bold"), fg=UIComponents.TEXT_COLOR, bg=UIComponents.DARK_BG)
+        name_label.pack(pady=(10, 5))
+        
+        status = tk.Label(receiving_app.incoming_overlay, text="Incoming voice call...",
+                       font=("Segoe UI", 14), fg=UIComponents.INACTIVE_COLOR, bg=UIComponents.DARK_BG)
+        status.pack(pady=5)
+        
+        # Button frame
+        button_frame = tk.Frame(receiving_app.incoming_overlay, bg=UIComponents.DARK_BG)
+        button_frame.pack(side=tk.BOTTOM, pady=40)
+        
+        # Accept call button (green)
+        accept_btn = tk.Canvas(button_frame, width=70, height=70, 
+                            bg=UIComponents.DARK_BG, highlightthickness=0)
+        accept_btn.pack(side=tk.LEFT, padx=20)
+        
+        accept_circle = accept_btn.create_oval(5, 5, 65, 65, fill="#4CAF50", outline="")
+        accept_phone = accept_btn.create_text(35, 35, text="📞", font=("Segoe UI", 24), fill="white")
+        
+        # Reject call button (red)
+        reject_btn = tk.Canvas(button_frame, width=70, height=70, 
+                            bg=UIComponents.DARK_BG, highlightthickness=0)
+        reject_btn.pack(side=tk.RIGHT, padx=20)
+        
+        reject_circle = reject_btn.create_oval(5, 5, 65, 65, fill="#E53935", outline="")
+        reject_phone = reject_btn.create_text(35, 35, text="📞", font=("Segoe UI", 24), fill="white", angle=135)
+        
+        # Bind actions
+        accept_btn.tag_bind(accept_circle, "<Button-1>", 
+                         lambda e: CallHandlers._accept_incoming_call(receiving_app, calling_app))
+        accept_btn.tag_bind(accept_phone, "<Button-1>", 
+                         lambda e: CallHandlers._accept_incoming_call(receiving_app, calling_app))
+        
+        reject_btn.tag_bind(reject_circle, "<Button-1>", 
+                         lambda e: CallHandlers._reject_incoming_call(receiving_app, calling_app))
+        reject_btn.tag_bind(reject_phone, "<Button-1>", 
+                         lambda e: CallHandlers._reject_incoming_call(receiving_app, calling_app))
+        
+        # Play ringing sound (if sound available)
+        # This would need to be implemented with a sound library
+
+    @staticmethod
+    def _accept_incoming_call(receiving_app, calling_app):
+        """Accept an incoming call and establish the connection."""
+        # Remove incoming call overlay
+        if hasattr(receiving_app, 'incoming_overlay') and receiving_app.incoming_overlay.winfo_exists():
+            receiving_app.incoming_overlay.destroy()
+            delattr(receiving_app, 'incoming_overlay')
+        
+        # Remove calling overlay
+        if hasattr(calling_app, 'calling_overlay') and calling_app.calling_overlay.winfo_exists():
+            calling_app.calling_overlay.destroy()
+            delattr(calling_app, 'calling_overlay')
+        
+        # Get the pending message from the calling app
+        input_text = calling_app.pending_message if hasattr(calling_app, 'pending_message') else ""
+        
+        # Establish the call connection
+        CallHandlers._establish_call(calling_app, receiving_app)
+        
+        # Send the pending message to minion_terminal
+        if input_text and hasattr(calling_app.__class__, 'minion_terminal'):
+            # Set the text entry in minion_terminal to this message
+            calling_app.__class__.minion_terminal.text_entry.delete("1.0", tk.END)
+            calling_app.__class__.minion_terminal.text_entry.insert("1.0", input_text)
             
-        # Hide start button, show stop button
-        receiving_app.start_call_button.pack_forget()
-        receiving_app.stop_call_button.pack(pady=10)
+            # Start the minion conversation
+            calling_app.__class__.minion_terminal.start_minion_conversation()
+            
+            # Clear the input field after sending
+            calling_app.text_entry.delete("1.0", tk.END)
+            calling_app.text_entry.insert("1.0", "Type a message...")
+            calling_app.text_entry.config(fg="#8696A0")
+
+    @staticmethod
+    def _reject_incoming_call(receiving_app, calling_app):
+        """Reject an incoming call."""
+        # Remove incoming call overlay
+        if hasattr(receiving_app, 'incoming_overlay') and receiving_app.incoming_overlay.winfo_exists():
+            receiving_app.incoming_overlay.destroy()
+            delattr(receiving_app, 'incoming_overlay')
         
-        # Show the duration label and initialize call duration
-        receiving_app.duration_label.pack()
-        receiving_app.call_duration = 0
-        receiving_app.duration_label.config(text="00:00")
+        # Update caller's UI to show rejected
+        if hasattr(calling_app, 'calling_overlay') and calling_app.calling_overlay.winfo_exists():
+            calling_app.calling_status.config(text="Call rejected")
+            calling_app.calling_overlay.after(1500, calling_app.calling_overlay.destroy)
         
-        # Update UI in button to show active call
-        if hasattr(receiving_app, 'call_button_frame'):
-            for widget in receiving_app.call_button_frame.winfo_children():
-                if isinstance(widget, tk.Canvas):
-                    widget.itemconfig("button_bg", fill="#FF0000")  # Change to red for active call
-                    # Remove phone icon, add end call icon
-                    widget.delete("button_icon")
-                    widget.create_text(widget.winfo_width() // 2, 
-                                     widget.winfo_height() // 2, 
-                                     text="❌", 
-                                     font=("Segoe UI Emoji", widget.winfo_width() // 3), 
-                                     fill="white", 
-                                     tags="button_icon")
-                    
-        # Get current timestamp
-        import datetime
-        current_time = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        # Add a call start message to the receiving app
-        receiving_app.response_text.config(state=tk.NORMAL)
-        if MessageHandlers.preserve_history and receiving_app.response_text.get("1.0", tk.END).strip():
-            receiving_app.response_text.insert(tk.END, "\n\n" + "═" * 60 + "\n\n", "separator")
-        receiving_app.response_text.insert(tk.END, f"[{current_time}] {MessageHandlers.CALL_EMOJI} Call automatically connected with {calling_app.model_label}\n", "system_header")
-        receiving_app.response_text.config(state=tk.DISABLED)
-        
-        # Make sure the call message is visible
-        MessageHandlers._ensure_autoscroll(receiving_app)
-        
-        # Start the timer to track call duration in the receiving app
-        receiving_app.root.after(1000, lambda: CallHandlers.update_duration(receiving_app))
+        # Log to terminal
+        CallHandlers.print_to_terminal("Call rejected", is_system=True)
 
     @staticmethod
     def _establish_call(app, other_app):
-        """Set up the UI for an established call."""
-        from message_handlers import MessageHandlers
+        """Establish a call between two app instances."""
+        # Make sure instances exist
+        if app is None or other_app is None:
+            return
+            
+        # Create visual connection animation between windows
+        CallHandlers._create_connection_animation(app, other_app)
         
+        # Update call state
         app.call_active = True
-        import datetime
-        app.call_start_time = datetime.datetime.now()
-        app.status_label.config(text=f"Connected to {other_app.model_name}")
-        app.duration_label.pack()
-        app.start_call_button.pack_forget()
-        app.stop_call_button.pack(pady=10)
-        app.text_entry.config(state=tk.DISABLED)
+        app.call_start_time = time.time()
+        app.connected_to = other_app
         
-        # Add a connected message with timestamp
-        import datetime
-        current_time = datetime.datetime.now().strftime("%H:%M:%S")
+        # Set the active_call class variable through app's class
+        app.__class__.active_call = (app, other_app)
         
-        # Clear any previous response first but respect history
-        app.response_text.config(state=tk.NORMAL)
+        # Reset waiting call
+        app.__class__.waiting_call = None
         
-        # Remove existing thinking indicators
-        MessageHandlers._remove_thinking_indicators(app)
+        # Configure UI to show active call with enhanced visual feedback
+        app.status_label.config(text=f"Connected to {other_app.model_label}")
         
-        # Add connection message with proper formatting 
-        if MessageHandlers.preserve_history and app.response_text.get("1.0", tk.END).strip():
-            app.response_text.insert(tk.END, "\n\n", "")
+        # Change call button to a red "end call" button
+        if hasattr(app, 'call_btn'):
+            app.call_btn.itemconfig("button_bg", fill="#E53935")  # Red for end call
+            app.call_btn.itemconfig("button_icon", text="🔴")  # Change icon
+            
+        # Add subtle glow effect to the avatar to show active status
+        if hasattr(app, 'avatar_canvas'):
+            for i in range(3):
+                app.avatar_canvas.create_oval(
+                    5 + i*2, 5 + i*2, 
+                    55 - i*2, 55 - i*2, 
+                    outline="#4CAF50",  # Green glow
+                    width=1,
+                    tags="active_call_glow"
+                )
+                
+        # Highlight the name label with active color
+        if hasattr(app, 'name_label'):
+            app.name_label.config(fg="#4CAF50")  # Green for active
+            
+        # Make sure the text entry is clear and ready for input
+        if hasattr(app, 'text_entry'):
+            app.text_entry.delete("1.0", tk.END)
+            
+        # Clear the response area and add initial message
+        app.clear_response()
         
-        app.response_text.insert(tk.END, f"[{current_time}] {MessageHandlers.CALL_EMOJI} Connected to {other_app.model_name}\n", "system_header")
-        app.response_text.config(state=tk.DISABLED)
+        # Add animated typing greeting
+        greeting = f"Connected to {other_app.model_label}. Call is active now."
+        current_pos = 0
         
-        # Show appropriate thinking status
-        MessageHandlers.show_thinking_in_response(app, True)
+        def animate_greeting():
+            nonlocal current_pos
+            if current_pos <= len(greeting):
+                app.append_to_response(greeting[:current_pos])
+                current_pos += 3  # Add 3 characters at a time for speed
+                app.root.after(50, animate_greeting)
+                
+        animate_greeting()
         
-        # Start the duration timer
+        # Start the call duration timer
         CallHandlers.update_duration(app)
-        
-        # Change call button to red for ending the call
-        app.call_button_frame.destroy()
-        from ui_components import UIComponents
-        app.call_button_frame = UIComponents.create_circular_button(
-            app,
-            app.buttons_frame, 
-            80, 
-            "#FF0000", 
-            "End", 
-            command=app.toggle_call
-        )
-        app.call_button_frame.pack(side=tk.LEFT, padx=15)
 
     @staticmethod
+    def _create_connection_animation(app1, app2):
+        """Create a visual animation connecting the two call windows when a call is established."""
+        # Create a transparent window for the animation
+        animation_window = tk.Toplevel()
+        animation_window.attributes("-alpha", 0.8)
+        animation_window.attributes("-topmost", True)
+        animation_window.overrideredirect(True)  # Remove window decorations
+        
+        # Get positions of both windows
+        app1.root.update_idletasks()
+        app2.root.update_idletasks()
+        
+        x1, y1 = app1.root.winfo_rootx() + app1.root.winfo_width()//2, app1.root.winfo_rooty() + app1.root.winfo_height()//2
+        x2, y2 = app2.root.winfo_rootx() + app2.root.winfo_width()//2, app2.root.winfo_rooty() + app2.root.winfo_height()//2
+        
+        # Position and size the animation window to cover the space between windows
+        width = abs(x2 - x1) + 100  # Add some padding
+        height = abs(y2 - y1) + 100  # Add some padding
+        
+        # Calculate position to connect window centers
+        start_x = min(x1, x2) - 50
+        start_y = min(y1, y2) - 50
+        
+        # Create a window that encompasses both points with padding
+        animation_window.geometry(f"{width}x{height}+{start_x}+{start_y}")
+        
+        # Create a canvas for the animation
+        canvas = tk.Canvas(animation_window, bg=UIComponents.DARKER_BG, highlightthickness=0)
+        canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Calculate the bezier curve to create a smooth arc between windows
+        def bezier_point(t, p0, p1, p2):
+            """Calculate point on a quadratic bezier curve."""
+            return (1-t)**2 * p0 + 2 * (1-t) * t * p1 + t**2 * p2
+        
+        # Convert absolute coordinates to relative to animation window
+        x1_rel = x1 - start_x
+        y1_rel = y1 - start_y
+        x2_rel = x2 - start_x
+        y2_rel = y2 - start_y
+        
+        # Control point for the bezier curve (raise it above the direct line)
+        mid_x = (x1_rel + x2_rel) / 2
+        mid_y = min(y1_rel, y2_rel) - 70  # Raise the curve up
+        
+        # Generate points along the bezier curve
+        curve_points = []
+        for i in range(31):  # More points = smoother curve
+            t = i / 30
+            x = bezier_point(t, x1_rel, mid_x, x2_rel)
+            y = bezier_point(t, y1_rel, mid_y, y2_rel)
+            curve_points.append((x, y))
+        
+        # Animation function
+        def animate_connection(step=0, max_steps=20):
+            if step > max_steps:
+                # Show connected animation
+                points_flat = []
+                for x, y in curve_points:
+                    points_flat.extend([x, y])
+                
+                # Draw final connection line
+                canvas.delete("all")
+                connection_line = canvas.create_line(
+                    points_flat,
+                    width=4, 
+                    fill=UIComponents.ANIMATION_COLOR_ACTIVE,
+                    smooth=True,
+                    dash=(10, 4),
+                    dashoffset=step % 14
+                )
+                
+                # Add connection glow
+                for i in range(3):
+                    canvas.create_line(
+                        points_flat,
+                        width=6 + i*3, 
+                        fill=UIComponents.ANIMATION_COLOR_ACTIVE,
+                        smooth=True,
+                        dash=(10, 4),
+                        dashoffset=step % 14,
+                        stipple="gray50",  # Create glow effect
+                        state=tk.DISABLED
+                    )
+                
+                # Add connection text in the middle
+                text_x = (x1_rel + x2_rel) / 2
+                text_y = (y1_rel + y2_rel) / 2 - 15
+                canvas.create_text(
+                    text_x, text_y,
+                    text="Connected",
+                    fill="#FFFFFF",
+                    font=("Segoe UI", 12, "bold")
+                )
+                
+                # Create a pulsing effect for the connection line
+                def pulse_line(count=0):
+                    # Maximum of 6 pulses (3 seconds)
+                    if count >= 6:
+                        # Fade out and destroy
+                        fade_out()
+                        return
+                    
+                    # Toggle dash pattern for pulsing effect
+                    dash_offset = count * 7
+                    canvas.itemconfig(connection_line, dashoffset=dash_offset)
+                    
+                    # Schedule next pulse
+                    animation_window.after(500, lambda: pulse_line(count + 1))
+                
+                # Fade out animation
+                def fade_out(alpha=100):
+                    if alpha <= 0:
+                        animation_window.destroy()
+                        return
+                    
+                    # Reduce alpha
+                    animation_window.attributes("-alpha", alpha / 100)
+                    animation_window.after(50, lambda: fade_out(alpha - 5))
+                
+                # Start pulsing animation
+                pulse_line()
+                return
+                
+            # Clear canvas
+            canvas.delete("all")
+            
+            # Calculate progress (0 to 1)
+            progress = min(1.0, step / max_steps)
+            
+            # Determine how many points to show based on progress
+            points_to_show = int(len(curve_points) * progress)
+            
+            if points_to_show > 1:
+                # Prepare points for the line
+                points_flat = []
+                for i in range(points_to_show):
+                    x, y = curve_points[i]
+                    points_flat.extend([x, y])
+                
+                # Draw partial connection line
+                canvas.create_line(
+                    points_flat,
+                    width=4, 
+                    fill=UIComponents.ANIMATION_COLOR_ACTIVE,
+                    smooth=True
+                )
+            
+            # Draw animated circle at the end of the visible line
+            if points_to_show > 0:
+                x, y = curve_points[points_to_show - 1]
+                # Pulsing circle size
+                size = 6 + 3 * math.sin(step * 0.8)
+                canvas.create_oval(
+                    x - size, y - size,
+                    x + size, y + size,
+                    fill=UIComponents.ANIMATION_COLOR_ACTIVE,
+                    outline="#FFFFFF",
+                    width=2
+                )
+                
+                # Add trailing effect
+                for i in range(3):
+                    trail_idx = max(0, points_to_show - 3 + i)
+                    if trail_idx < points_to_show:
+                        tx, ty = curve_points[trail_idx]
+                        trail_size = (i + 1) * 2
+                        canvas.create_oval(
+                            tx - trail_size, ty - trail_size,
+                            tx + trail_size, ty + trail_size,
+                            fill=UIComponents.ANIMATION_COLOR_ACTIVE,
+                            stipple="gray50"  # Make it semi-transparent
+                        )
+            
+            # Schedule next frame
+            animation_window.after(50, lambda: animate_connection(step + 1, max_steps))
+        
+        # Start animation
+        animate_connection()
+    
+    @staticmethod
     def end_call(app):
-        """End the active call."""
+        """End the current active call."""
         if not app.call_active:
             return
             
-        # Set the ending call flag to prevent multiple end_call calls
-        if app.is_ending_call:
+        # Prevent multiple end call operations
+        if getattr(app, 'is_ending_call', False):
             return
+            
         app.is_ending_call = True
         
-        # Get the connected app (if any)
-        connected_app = app.connected_to
-        
-        # Update status
-        app.status_label.config(text="Ending call...")
-        if hasattr(app, 'status_indicator'):
-            app.status_indicator.itemconfig("indicator", fill="#FF5722")  # Orange for ending call
-        
-        if connected_app and connected_app.root.winfo_exists():
-            connected_app.status_label.config(text="Call ending...")
-            if hasattr(connected_app, 'status_indicator'):
-                connected_app.status_indicator.itemconfig("indicator", fill="#FF5722")  # Orange for ending call
-        
-        # Store current conversation state
-        worker_response = None
-        supervisor_response = None
-        if app.response_text.winfo_exists():
-            current_text = app.response_text.get("1.0", tk.END)
+        # Add ending animation with countdown
+        if hasattr(app, 'status_label'):
+            app.status_label.config(text="Ending call in 3...")
             
-            # Save conversation history before ending the call
-            MessageHandlers.save_conversation_history(app)
-            
-            # Store for connected app
-            if app.model_label == "Worker (Local)":
-                worker_response = current_text
-            elif app.model_label == "Supervisor (Remote)":
-                supervisor_response = current_text
+            def countdown(count):
+                if count <= 0:
+                    # Countdown complete, actually end the call
+                    CallHandlers._complete_end_call(app)
+                    return
+                    
+                # Update countdown display
+                app.status_label.config(text=f"Ending call in {count}...")
                 
-        if connected_app and connected_app.response_text.winfo_exists():
-            connected_text = connected_app.response_text.get("1.0", tk.END)
-            
-            # Save conversation history for connected app
-            MessageHandlers.save_conversation_history(connected_app)
-            
-            # Store for later
-            if connected_app.model_label == "Worker (Local)":
-                worker_response = connected_text
-            elif connected_app.model_label == "Supervisor (Remote)":
-                supervisor_response = connected_text
-    
-        # Print the complete conversation to the terminal
-        CallHandlers.print_to_terminal("Call ended - Full conversation:", is_system=True)
-        CallHandlers.print_full_conversation()
-        
-        # Save the conversation to a text file
-        text_file = CallHandlers.save_conversation_to_text_file()
-        if text_file:
-            app.status_label.config(text=f"Conversation saved to {text_file}")
-            if connected_app and connected_app.root.winfo_exists():
-                connected_app.status_label.config(text=f"Conversation saved to {text_file}")
-        
-        # Add a call end message
-        import datetime
-        current_time = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        # Add call ended message with timestamp
-        app.response_text.config(state=tk.NORMAL)
-        app.response_text.insert(tk.END, f"\n[{current_time}] {MessageHandlers.CALL_EMOJI} Call ended ", "system_header")
-        
-        # Add call duration
-        if hasattr(app, 'call_duration'):
-            minutes = app.call_duration // 60
-            seconds = app.call_duration % 60
-            app.response_text.insert(tk.END, f"• Duration: {minutes:02d}:{seconds:02d}\n", "call_info")
+                # Flash the call button
+                if hasattr(app, 'call_btn'):
+                    current_color = app.call_btn.itemcget("button_bg", "fill")
+                    
+                    # Flash between red and gray
+                    if current_color == "#E53935":  # Red
+                        app.call_btn.itemconfig("button_bg", fill="#9E9E9E")  # Gray
+                    else:
+                        app.call_btn.itemconfig("button_bg", fill="#E53935")  # Red
+                        
+                # Continue countdown
+                app.root.after(1000, lambda: countdown(count - 1))
+                
+            # Start countdown
+            countdown(3)
         else:
-            app.response_text.insert(tk.END, "\n", "")
-            
-        app.response_text.config(state=tk.DISABLED)
-        
-        # Do the same for connected app
-        if connected_app and connected_app.response_text.winfo_exists():
-            connected_app.response_text.config(state=tk.NORMAL)
-            connected_app.response_text.insert(tk.END, f"\n[{current_time}] {MessageHandlers.CALL_EMOJI} Call ended ", "system_header")
-            
-            # Add call duration
-            if hasattr(connected_app, 'call_duration'):
-                minutes = connected_app.call_duration // 60
-                seconds = connected_app.call_duration % 60
-                connected_app.response_text.insert(tk.END, f"• Duration: {minutes:02d}:{seconds:02d}\n", "call_info")
-            else:
-                connected_app.response_text.insert(tk.END, "\n", "")
-                
-            connected_app.response_text.config(state=tk.DISABLED)
-            
-        # Proceed with call termination
-        CallHandlers._complete_end_call(app)
-
+            # If no status label, just end the call immediately
+            CallHandlers._complete_end_call(app)
+    
     @staticmethod
     def _complete_end_call(app):
-        """Complete the call ending process."""
-        app.call_active = False
-        
-        # Update UI
-        app.stop_call_button.pack_forget()
-        app.start_call_button.pack(pady=10)
-        
-        # Update status indicator to idle (green)
-        if hasattr(app, 'status_indicator'):
-            app.status_indicator.itemconfig("indicator", fill="#4CAF50")
-            
-        # Restore call button to normal state
-        if hasattr(app, 'call_button_frame'):
-            for widget in app.call_button_frame.winfo_children():
-                if isinstance(widget, tk.Canvas):
-                    widget.itemconfig("button_bg", fill="#00BFA5")  # Reset to green
-                    # Remove end call icon, add phone icon
-                    widget.delete("button_icon")
-                    widget.create_text(widget.winfo_width() // 2, 
-                                     widget.winfo_height() // 2, 
-                                     text="📞", 
-                                     font=("Segoe UI Emoji", widget.winfo_width() // 3), 
-                                     fill="white", 
-                                     tags="button_icon")
-        
-        # If connected to a worker/supervisor instance, end that call too
-        if app.connected_to and app.connected_to.root.winfo_exists():
-            # Only trigger if the connected app hasn't already ended
-            if app.connected_to.call_active:
-                CallHandlers._terminate_call(app.connected_to)
+        """Complete the call ending process after animations finish."""
+        # Find the other app instance
+        other_app = None
+        for instance in CallHandlers.instances:
+            if instance != app and instance.call_active:
+                other_app = instance
+                break
                 
-        # Final cleanup
-        app.connected_to = None
-        app.is_ending_call = False
+        # End call for both apps
+        if other_app:
+            # End call for the other app first
+            if not getattr(other_app, 'is_ending_call', False):
+                other_app.is_ending_call = True
+                CallHandlers._terminate_call(other_app)
+                
+        # Now end call for this app
+        CallHandlers._terminate_call(app)
         
-        # Update status text
-        if MessageHandlers.preserve_history:
-            app.status_label.config(text=f"{MessageHandlers.SAVE_EMOJI} History: Preserved")
-        else:
-            app.status_label.config(text="Ready for new call")
-            
-        # Toast notification to show call ended
-        app.root.after(100, lambda: CallHandlers._show_call_ended_toast(app))
-
+        # Show call ended toast notification
+        CallHandlers._show_call_ended_toast(app)
+        
+        # Save conversation to text file
+        CallHandlers.save_conversation_to_text_file()
+        
+        # Clear the active call reference using app's class
+        app.__class__.active_call = None
+    
     @staticmethod
     def _show_call_ended_toast(app):
-        """Show a toast notification for call ended."""
-        if not hasattr(app, 'root') or not app.root.winfo_exists():
+        """Show a toast notification that the call has ended."""
+        if not hasattr(app, 'main_frame'):
             return
             
-        # Create a toast frame
-        toast = tk.Toplevel(app.root)
-        toast.overrideredirect(True)  # Remove window decorations
-        toast.config(bg="#333333")
-        toast.attributes("-topmost", True)
-        
-        # Position at the bottom of the app
-        x = app.root.winfo_x() + app.root.winfo_width() // 2 - 150
-        y = app.root.winfo_y() + app.root.winfo_height() - 100
-        toast.geometry(f"300x60+{x}+{y}")
-        
-        # Add rounded corners using a canvas
-        canvas = tk.Canvas(toast, bg="#333333", bd=0, highlightthickness=0)
-        canvas.pack(fill=tk.BOTH, expand=True)
-        
-        # Call ended message
-        toast_msg = tk.Label(
-            canvas, 
-            text=f"{MessageHandlers.CALL_EMOJI} Call ended",
-            font=("Segoe UI", 12, "bold"),
-            fg="white",
-            bg="#333333"
+        # Create toast frame
+        toast_frame = tk.Frame(
+            app.main_frame,
+            bg="#323232",  # Dark gray background
+            padx=15,
+            pady=10
         )
-        toast_msg.pack(pady=(10, 5))
+        
+        # Position it at the bottom center
+        toast_frame.place(relx=0.5, rely=0.9, anchor=tk.CENTER)
+        
+        # Add message with icon
+        toast_label = tk.Label(
+            toast_frame,
+            text=f"{MessageHandlers.CALL_EMOJI} Call Ended",
+            font=("Segoe UI", 12),
+            fg="white",
+            bg="#323232"
+        )
+        toast_label.pack()
         
         # Add duration if available
-        if hasattr(app, 'call_duration'):
-            minutes = app.call_duration // 60
-            seconds = app.call_duration % 60
-            duration_msg = tk.Label(
-                canvas,
+        if app.call_start_time:
+            duration = int(time.time() - app.call_start_time)
+            minutes = duration // 60
+            seconds = duration % 60
+            
+            duration_label = tk.Label(
+                toast_frame,
                 text=f"Duration: {minutes:02d}:{seconds:02d}",
                 font=("Segoe UI", 10),
                 fg="#BBBBBB",
-                bg="#333333"
+                bg="#323232"
             )
-            duration_msg.pack()
+            duration_label.pack()
+            
+        # Make toast disappear after a few seconds
+        def remove_toast():
+            toast_frame.destroy()
+            
+        app.root.after(3000, remove_toast)
         
-        # Auto-close after 3 seconds
-        toast.after(3000, toast.destroy)
-
+        # Add fade out animation
+        def fade_out(alpha=100):
+            if alpha <= 0:
+                remove_toast()
+                return
+                
+            # Calculate transparency for Windows (different from other platforms)
+            if sys.platform == "win32":
+                # On Windows, use attributes to set transparency level
+                try:
+                    toast_frame.attributes("-alpha", alpha/100)
+                except:
+                    pass
+            else:
+                # On other platforms, simulate fading by changing background color
+                gray_level = int(50 + (alpha/100) * 50)
+                bg_color = f"#{gray_level:02x}{gray_level:02x}{gray_level:02x}"
+                toast_frame.config(bg=bg_color)
+                toast_label.config(bg=bg_color)
+                if 'duration_label' in locals():
+                    duration_label.config(bg=bg_color)
+                    
+            # Continue fading
+            app.root.after(50, lambda: fade_out(alpha - 5))
+            
+        # Start fade out after 2 seconds
+        app.root.after(2000, lambda: fade_out())
+        
     @staticmethod
     def _terminate_call(app):
-        """Clean up after a call ends."""
-        text_input = app.text_entry.get("1.0", tk.END)
-        messagebox.showinfo("Call Complete", f"Voice call ended!\nMessage: {text_input}")
-
-        app.text_entry.config(state=tk.NORMAL)
-        app.text_entry.delete("1.0", tk.END)
-
-        app.call_button_frame.destroy()
-        from ui_components import UIComponents
-        app.call_button_frame = UIComponents.create_circular_button(
-            app,
-            app.buttons_frame, 
-            80, 
-            "#00BFA5", 
-            "Call", 
-            command=app.toggle_call
-        )
-        app.call_button_frame.pack(side=tk.LEFT, padx=15)
-
+        """Terminate the call and reset UI state."""
+        # Reset call state
+        app.call_active = False
+        app.is_ending_call = False
+        
+        # Reset connected_to reference
+        app.connected_to = None
+        
+        # Update status
+        if hasattr(app, 'status_label'):
+            app.status_label.config(text="Call ended")
+            
+        # Reset call button to green "start call" button
+        if hasattr(app, 'call_btn'):
+            app.call_btn.itemconfig("button_bg", fill="#00BFA5")  # Green for start call
+            app.call_btn.itemconfig("button_icon", text="📞")  # Reset icon
+            
+        # Remove call timer
+        if app.duration_timer:
+            app.root.after_cancel(app.duration_timer)
+            app.duration_timer = None
+            
+        # Remove active call glow effect
+        if hasattr(app, 'avatar_canvas'):
+            app.avatar_canvas.delete("active_call_glow")
+            
+        # Reset name label color
+        if hasattr(app, 'name_label'):
+            app.name_label.config(fg="white")  # Reset to default color
+            
     @staticmethod
     def update_duration(app):
         """Update the call duration display."""
-        if not app.call_active or not hasattr(app, 'duration_label'):
+        if not app.call_active:
             return
             
-        app.call_duration += 1
-        minutes = app.call_duration // 60
-        seconds = app.call_duration % 60
+        # Calculate elapsed time
+        elapsed = int(time.time() - app.call_start_time)
+        minutes = elapsed // 60
+        seconds = elapsed % 60
         
-        # Format with leading zeros for better readability
-        app.duration_label.config(text=f"{minutes:02d}:{seconds:02d}")
+        # Update duration display
+        if hasattr(app, 'duration_label'):
+            app.duration_label.config(text=f"{minutes:02d}:{seconds:02d}")
+        elif hasattr(app, 'status_label'):
+            current_text = app.status_label.cget("text")
+            # Only update if the text doesn't have a dynamic indicator
+            if not "..." in current_text:
+                app.status_label.config(text=f"Call active ({minutes:02d}:{seconds:02d})")
+                
+        # Periodically change text color to add visual interest 
+        if elapsed % 5 == 0 and hasattr(app, 'duration_label'):
+            original_color = app.duration_label.cget("fg")
+            app.duration_label.config(fg="#4CAF50")  # Highlight color
+            
+            # Reset color after a brief flash
+            def revert_color():
+                if hasattr(app, 'duration_label') and app.duration_label.winfo_exists():
+                    app.duration_label.config(fg=original_color)
+                    
+            app.root.after(500, revert_color)
+            
+        # Schedule next update
+        app.duration_timer = app.root.after(1000, lambda: CallHandlers.update_duration(app))
         
-        # Pulse the clock icon if available
-        if app.call_duration % 2 == 0 and hasattr(app, 'duration_label'):
-            if app.duration_label.winfo_parent():
-                parent = app.duration_label.nametowidget(app.duration_label.winfo_parent())
-                for widget in parent.winfo_children():
-                    if isinstance(widget, tk.Canvas):
-                        # Change color briefly to indicate active time
-                        try:
-                            # Find the clock's oval and hands by index rather than using "all"
-                            # Typically the first item is the oval (clock face)
-                            widget.itemconfig(1, outline="#00BFA5")  # Clock face
-                            widget.itemconfig(2, fill="#00BFA5")     # Hour hand
-                            widget.itemconfig(3, fill="#00BFA5")     # Minute hand
-                            
-                            # Schedule reverting to original color
-                            def revert_color():
-                                try:
-                                    widget.itemconfig(1, outline="#8696A0")  # Clock face
-                                    widget.itemconfig(2, fill="#8696A0")      # Hour hand
-                                    widget.itemconfig(3, fill="#8696A0")      # Minute hand
-                                except:
-                                    pass  # In case widget is destroyed
-                                    
-                            app.root.after(500, revert_color)
-                        except:
-                            pass  # Ignore errors if widget structure is different
-        
-        # Continue updating every second
-        app.root.after(1000, lambda: CallHandlers.update_duration(app)) 
-
     @staticmethod
     def save_conversation_to_text_file():
-        """Save the full conversation to a text file."""
-        # Create a timestamped filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"full_conversation_{timestamp}.txt"
+        """Save the conversation history to a text file."""
+        # Create directory for conversation logs if it doesn't exist
+        os.makedirs("conversation_history", exist_ok=True)
         
-        try:
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write("=" * 80 + "\n")
-                f.write("FULL CONVERSATION HISTORY\n")
-                f.write("=" * 80 + "\n\n")
-                
-                # Write messages in chronological order with proper formatting
-                for i in range(max(len(CallHandlers.worker_conversation), len(CallHandlers.supervisor_conversation))):
-                    # Write worker message if available
-                    if i < len(CallHandlers.worker_conversation):
-                        f.write(f"\n👨‍💻 Worker says:\n{CallHandlers.worker_conversation[i]}\n\n")
-                        f.write("-" * 40 + "\n")
-                    
-                    # Write supervisor message if available
-                    if i < len(CallHandlers.supervisor_conversation):
-                        f.write(f"\n👩‍💼 Supervisor says:\n{CallHandlers.supervisor_conversation[i]}\n\n")
-                        f.write("-" * 40 + "\n")
-                
-                f.write("\n" + "=" * 80 + "\n")
+        # Generate a timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"conversation_history/call_{timestamp}.txt"
+        
+        # Format the conversation with proper timestamps and icons
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(f"=== CONVERSATION HISTORY ({timestamp}) ===\n\n")
             
-            print(f"\n[SYSTEM] Conversation saved to file: {filename}\n")
-            return filename
-        except Exception as e:
-            print(f"\n[SYSTEM] Error saving conversation to file: {e}\n")
-            return None 
+            # Worker conversation
+            f.write(f"=== WORKER CONVERSATION ===\n")
+            for msg in CallHandlers.worker_conversation:
+                f.write(f"{msg}\n")
+                
+            f.write("\n")
+            
+            # Supervisor conversation
+            f.write(f"=== SUPERVISOR CONVERSATION ===\n")
+            for msg in CallHandlers.supervisor_conversation:
+                f.write(f"{msg}\n")
+                
+        # Print to terminal that the conversation was saved
+        print(f"Conversation saved to {filename}")
+        
+        # Return the filename for reference
+        return filename 

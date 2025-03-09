@@ -14,7 +14,7 @@ class MessageHandlers:
     worker_thinking_icon = "★ Worker (Local) is thinking... 💭"
     supervisor_thinking_icon = "★ Supervisor (Remote) is thinking... 💭"
     
-    # Constants for emoji icons to ensure consistency
+    # Enhanced emoji set for rich visual feedback
     WORKER_EMOJI = "👨‍💻"
     SUPERVISOR_EMOJI = "👩‍💼"
     SYSTEM_EMOJI = "🔄"
@@ -36,6 +36,29 @@ class MessageHandlers:
     DELETE_ICON = "🗑️"
     EDIT_ICON = "✏️"
     FORWARD_ICON = "➡️"
+    
+    # Additional UI enhancement icons
+    ATTACHMENT_ICON = "📎"
+    CALENDAR_ICON = "📅"
+    CLOCK_ICON = "⏰"
+    LOCATION_ICON = "📍"
+    CAMERA_ICON = "📷"
+    MIC_ICON = "🎤"
+    SEARCH_ICON = "🔍"
+    SETTINGS_ICON = "⚙️"
+    INFO_ICON = "ℹ️"
+    LINK_ICON = "🔗"
+    LIKE_ICON = "👍"
+    DISLIKE_ICON = "👎"
+    STAR_ICON = "⭐"
+    PIN_ICON = "📌"
+    NEW_MESSAGE_ICON = "🔔"
+    
+    # Status indicators
+    ONLINE_STATUS = "🟢"
+    AWAY_STATUS = "🟠"
+    BUSY_STATUS = "🔴"
+    OFFLINE_STATUS = "⚫"
     
     # For saving conversation history
     conversation_history_dir = "conversation_history"
@@ -209,87 +232,61 @@ class MessageHandlers:
             print(f"Error preserving thinking indicator: {e}")
     
     @staticmethod
+    def _format_message_with_actions(app, message, sender):
+        """Format message with interactive action buttons"""
+        # Add action buttons after messages
+        if hasattr(app, 'response_text'):
+            # Get current position for inserting action buttons
+            current_pos = app.response_text.index(tk.END)
+            
+            # Create interactive action bar with buttons
+            action_bar = f" {MessageHandlers.COPY_ICON} {MessageHandlers.REPLY_ICON} {MessageHandlers.LIKE_ICON}"
+            
+            # For code blocks, add a special copy code button
+            if "```" in message:
+                action_bar += f" {MessageHandlers.CODE_EMOJI}"
+                
+            return message + "\n" + action_bar + "\n"
+        
+        return message + "\n"
+    
+    @staticmethod
+    def _add_timestamp_to_message(message):
+        """Add timestamp to message for better context"""
+        timestamp = datetime.now().strftime("%H:%M")
+        return f"{message} {MessageHandlers.CLOCK_ICON} {timestamp}"
+    
+    @staticmethod
     def append_to_response(app, text):
-        """Append text to the response area."""
-        if not hasattr(app, 'response_text') or not app.response_text.winfo_exists():
+        """Append text to the response area with enhanced formatting."""
+        if not hasattr(app, 'response_text'):
             return
             
-        # Get current timestamp
-        current_time = datetime.now().strftime("%H:%M:%S")
+        # Determine sender based on the app's model label
+        is_worker = app.model_label == "Worker (Local)"
+        sender_emoji = MessageHandlers.WORKER_EMOJI if is_worker else MessageHandlers.SUPERVISOR_EMOJI
+        sender_label = "Worker" if is_worker else "Supervisor"
         
-        # Determine sender based on app model
-        sender = "worker" if app.model_label == "Worker (Local)" else "supervisor"
+        # Enhanced formatting with sender info and timestamp
+        formatted_text = f"{sender_emoji} {sender_label}: {text}"
+        formatted_text = MessageHandlers._add_timestamp_to_message(formatted_text)
+        formatted_text = MessageHandlers._format_message_with_actions(app, formatted_text, sender_label)
         
-        # Improve quality of the message text where appropriate
-        formatted_text = MessageHandlers._improve_message_quality(text)
+        # Apply formatting and colorization
+        tag = "worker_message" if is_worker else "supervisor_message"
+        MessageHandlers._update_response_text(app, formatted_text, tag)
         
-        # Enable editing of the text widget
-        app.response_text.config(state=tk.NORMAL)
-        
-        # Add message header with timestamp and role icon
-        if sender == "worker":
-            is_question = ("?" in text and not "Waiting for" in text)
-            header_text = f"[{current_time}] {MessageHandlers.WORKER_EMOJI} Worker"
-            header_text += f" {MessageHandlers.QUESTION_EMOJI}:" if is_question else f" {MessageHandlers.SPEAKING_EMOJI}:"
-            
-            # Add interactive action buttons to header
-            app.response_text.insert(tk.END, header_text + "  ", "worker_header")
-            app.response_text.insert(tk.END, f"{MessageHandlers.COPY_ICON} ", "message_action")
-            app.response_text.insert(tk.END, f"{MessageHandlers.REPLY_ICON} ", "message_action")
-            app.response_text.insert(tk.END, "\n", "")
-            
-            # Check and apply special code block formatting if needed
-            if "<<<CODE_BLOCK_START:" in formatted_text:
-                # Add code block icon
-                app.response_text.insert(tk.END, f"{MessageHandlers.CODE_EMOJI} ", "code_icon")
-                # If it contains code blocks, apply special formatting
-                if not MessageHandlers._apply_code_block_formatting(app, formatted_text):
-                    # Fallback if code block formatting fails
-                    app.response_text.insert(tk.END, formatted_text, "worker_message")
-            else:
-                # Regular text with message bubble effect
-                app.response_text.insert(tk.END, formatted_text, "worker_message")
-            
-            app.response_text.insert(tk.END, "\n", "")  # Add newline after message
-            
-        elif sender == "supervisor":
-            is_question = ("?" in text and not "Waiting for" in text)
-            header_text = f"[{current_time}] {MessageHandlers.SUPERVISOR_EMOJI} Supervisor"
-            header_text += f" {MessageHandlers.QUESTION_EMOJI}:" if is_question else f" {MessageHandlers.SPEAKING_EMOJI}:"
-            
-            # Add interactive action buttons to header
-            app.response_text.insert(tk.END, header_text + "  ", "supervisor_header")
-            app.response_text.insert(tk.END, f"{MessageHandlers.COPY_ICON} ", "message_action")
-            app.response_text.insert(tk.END, f"{MessageHandlers.REPLY_ICON} ", "message_action")
-            app.response_text.insert(tk.END, "\n", "")
-            
-            # Check and apply special code block formatting if needed
-            if "<<<CODE_BLOCK_START:" in formatted_text:
-                # Add code block icon
-                app.response_text.insert(tk.END, f"{MessageHandlers.CODE_EMOJI} ", "code_icon")
-                # If it contains code blocks, apply special formatting
-                if not MessageHandlers._apply_code_block_formatting(app, formatted_text):
-                    # Fallback if code block formatting fails
-                    app.response_text.insert(tk.END, formatted_text, "supervisor_message")
-            else:
-                # Regular text with message bubble effect
-                app.response_text.insert(tk.END, formatted_text, "supervisor_message")
-            
-            app.response_text.insert(tk.END, "\n", "")  # Add newline after message
-            
-        else:
-            # System message with icon
-            app.response_text.insert(tk.END, f"[{current_time}] {MessageHandlers.SYSTEM_EMOJI} System: ", "system_header")
-            app.response_text.insert(tk.END, formatted_text + "\n", "system_message")
-            
-        # Make sure the new content is visible
+        # Ensure the conversation is visible with auto-scroll
         MessageHandlers._ensure_autoscroll(app)
         
-        # Disable editing after update
-        app.response_text.config(state=tk.DISABLED)
+        # Store the message in conversation history if enabled
+        if MessageHandlers.preserve_history:
+            # Save message to history
+            pass
             
-        return app.response_text.get("1.0", tk.END)
-    
+        # Force exit thinking state if it was active
+        MessageHandlers._force_exit_thinking_state(app)
+
     @staticmethod
     def show_thinking_in_response(app, is_thinking=True):
         """Shows or hides the thinking indicator in the response area."""
