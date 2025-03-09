@@ -167,51 +167,77 @@ class OllamaClient:
         **kwargs,
     ) -> Tuple[List[str], Usage, List[str]]:
         """
-        Synchronous implementation of chat completions.
-        
-        Args:
-            messages: Either a single message dict or a list of message dicts.
-            **kwargs: Additional parameters to pass to the Ollama API.
-            
-        Returns:
-            Tuple of (responses, usage, done_reasons)
+        Synchronous implementation of chat. Takes a list of messages and returns responses.
         """
-        # Import ollama here
         import ollama
         
-        # Ensure messages is a list of dicts
+        # If the user provided a single dictionary, wrap it
         if isinstance(messages, dict):
             messages = [messages]
-
-        # Now messages is a list of dicts, so we can pass it to Ollama in one go
+        
+        # Add options from self._prepare_options
         chat_kwargs = self._prepare_options()
         
         # Filter out temperature from kwargs as it's not supported by ollama.chat()
         filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'temperature'}
-
+        
         responses = []
         usage_total = Usage()
         done_reasons = []
-
+        
         try:
-            # Process all messages in a single call for efficiency
-            response = ollama.chat(
-                model=self.model_name,
-                messages=messages,
-                **chat_kwargs,
-                **filtered_kwargs,
-            )
-            responses.append(response["message"]["content"])
-            usage_total += Usage(
-                prompt_tokens=response["prompt_eval_count"],
-                completion_tokens=response["eval_count"],
-            )
-            done_reasons.append(response["done_reason"])
-
+            # Extract stream_callback if provided
+            stream_callback = filtered_kwargs.pop("stream_callback", None)
+            
+            # If streaming is requested
+            if stream_callback:
+                full_response = ""
+                # Process all messages in a single call for efficiency with streaming
+                for chunk in ollama.chat(
+                    model=self.model_name,
+                    messages=messages,
+                    stream=True,
+                    **chat_kwargs,
+                    **filtered_kwargs,
+                ):
+                    if "message" in chunk and "content" in chunk["message"]:
+                        content = chunk["message"]["content"]
+                        stream_callback(content)
+                        full_response += content
+                
+                # At the end, return the full response
+                responses.append(full_response)
+                # We still need to get usage data, so make one more non-streaming call
+                # but with system-only instruction to avoid generating more content
+                response = ollama.chat(
+                    model=self.model_name,
+                    messages=[{"role": "system", "content": "Usage stats only"}],
+                    **chat_kwargs,
+                )
+                usage_total += Usage(
+                    prompt_tokens=response["prompt_eval_count"],
+                    completion_tokens=response["eval_count"],
+                )
+                done_reasons.append("stop")
+            else:
+                # Process all messages in a single call for efficiency
+                response = ollama.chat(
+                    model=self.model_name,
+                    messages=messages,
+                    **chat_kwargs,
+                    **filtered_kwargs,
+                )
+                responses.append(response["message"]["content"])
+                usage_total += Usage(
+                    prompt_tokens=response["prompt_eval_count"],
+                    completion_tokens=response["eval_count"],
+                )
+                done_reasons.append(response["done_reason"])
+                
         except Exception as e:
             self.logger.error(f"Error during Ollama API call: {e}")
             raise
-
+        
         return responses, usage_total, done_reasons
     
     def chat(

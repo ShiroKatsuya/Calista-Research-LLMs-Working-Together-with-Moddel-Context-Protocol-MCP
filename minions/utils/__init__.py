@@ -7,6 +7,9 @@ import json
 import functools
 from typing import Dict, Any, Optional
 
+# Expose privacy_shield module
+from minions.utils.privacy_shield import apply_privacy_shield
+
 
 @functools.lru_cache(maxsize=32)
 def escape_newlines_in_strings(json_str: str) -> str:

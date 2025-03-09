@@ -62,6 +62,7 @@ class BaseClient:
         Args:
             messages: A list of message dictionaries or a single message dictionary
             **kwargs: Additional arguments to pass to the underlying API
+                - stream_callback: Optional function to call with each chunk of streamed output
             
         Returns:
             A tuple of (responses, usage, completion_reasons)

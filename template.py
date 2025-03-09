@@ -1,10 +1,17 @@
 import tkinter as tk
 from tkinter import messagebox, PhotoImage
-import sys
-import os
+
 from datetime import datetime
-from main_model import main
+from main import main
+
 import threading
+import queue
+
+# Queue for communication between threads
+input_queue = queue.Queue()
+output_queue = queue.Queue()
+
+
 
 class VoiceCallApp:
     # Class-level variables to track instances and call state
@@ -162,6 +169,9 @@ class VoiceCallApp:
                 # Handle errors and update UI from the main thread
                 error_message = str(e)
                 self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {error_message}"))
+
+                        
+    
         
         # Update UI to show processing state
         self.status_label.config(text="Processing voice message...")

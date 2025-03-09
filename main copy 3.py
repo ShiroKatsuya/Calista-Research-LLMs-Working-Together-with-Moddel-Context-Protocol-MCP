@@ -6,8 +6,6 @@ import sys
 from typing import Dict, Any, Set
 
 
-
-
 def main(task: str) -> None:
     """
     Main function to run the minion conversation system with a given task.
@@ -23,7 +21,7 @@ def main(task: str) -> None:
 
     # Configure the clients with appropriate parameters
     local_client = OllamaClient(
-        model_name="llama3.2:1b",
+        model_name="deepseek-r1:1.5b",
         temperature=0.2,  # Lower temperature for more deterministic outputs
     )
         
@@ -310,4 +308,4 @@ def process_supervisor_answer(supervisor_messages, idx, used_answers, full_messa
 
 if __name__ == "__main__":
     # Example task if no arguments provided
-    main()
+    main("What is the capital of France?")
