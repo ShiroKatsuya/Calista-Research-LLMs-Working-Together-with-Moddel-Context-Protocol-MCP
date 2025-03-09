@@ -4,12 +4,15 @@ import os
 from ui_components import UIComponents
 from message_handlers import MessageHandlers
 from call_handlers import CallHandlers
+from minion_terminal import MinionTerminal
 
 class VoiceCallApp:
-    # Class-level variables to track instances and call state
-    instances = []
+    # Call state tracking
     active_call = None
     waiting_call = None
+    # Shared minion terminal instance
+    minion_terminal = None
+    minion_window = None
 
     def __init__(self, root, model_name, model_path):
         """Initialize the VoiceCallApp with the given parameters."""
@@ -17,6 +20,13 @@ class VoiceCallApp:
         self.model_name = model_name
         self.model_path = model_path
         self.model_label = "Model"  # Default label, will be overridden
+        
+        # Initialize the minion terminal only once for the first instance
+        if VoiceCallApp.minion_terminal is None:
+            VoiceCallApp.minion_window = tk.Toplevel(root)
+            VoiceCallApp.minion_window.title("Minions Terminal")
+            VoiceCallApp.minion_terminal = MinionTerminal(VoiceCallApp.minion_window)
+        
         self.setup_ui()
         self.call_active = False
         self.call_start_time = None
@@ -32,8 +42,8 @@ class VoiceCallApp:
         # Ensure conversation history directory exists
         os.makedirs(MessageHandlers.conversation_history_dir, exist_ok=True)
         
-        # Add this instance to the list of instances
-        VoiceCallApp.instances.append(self)
+        # Add this instance to the CallHandlers instances list
+        CallHandlers.instances.append(self)
     
     def setup_ui(self):
         """Set up the UI for the app."""
@@ -99,4 +109,31 @@ class VoiceCallApp:
         Returns:
             The new preserve_history value
         """
-        return MessageHandlers.toggle_preserve_history(self, preserve) 
+        return MessageHandlers.toggle_preserve_history(self, preserve)
+    
+    def send_to_minion(self):
+        """Send the current text entry message to the minion terminal"""
+        # DEPRECATED: This method is kept for backward compatibility.
+        # UI components now communicate directly with minion_terminal
+        
+        # Make sure minion terminal exists
+        if VoiceCallApp.minion_terminal is None:
+            return
+            
+        message = self.text_entry.get("1.0", "end-1c").strip()
+        if message and message != "Type a message...":
+            # Set the message in minion_terminal
+            VoiceCallApp.minion_terminal.text_entry.delete("1.0", tk.END)
+            VoiceCallApp.minion_terminal.text_entry.insert("1.0", message)
+            
+            # Send the message directly to minion_terminal
+            VoiceCallApp.minion_terminal.send_message()
+            
+            # Clear the input field after sending
+            self.text_entry.delete("1.0", tk.END)
+            self.text_entry.insert("1.0", "Type a message...")
+            self.text_entry.configure(fg="#8696A0")  # Reset to placeholder color
+            
+            # Bring minion terminal window to front
+            if VoiceCallApp.minion_window:
+                VoiceCallApp.minion_window.lift() 

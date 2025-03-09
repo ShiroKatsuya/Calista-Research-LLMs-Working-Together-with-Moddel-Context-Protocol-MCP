@@ -11,14 +11,31 @@ class MessageHandlers:
     preserve_history = True  # Changed to True by default
     
     # Class variables to store thinking state icons
-    worker_thinking_icon = "★ Worker (Local) is thinking... ★"
-    supervisor_thinking_icon = "★ Supervisor (Remote) is thinking... ★"
+    worker_thinking_icon = "★ Worker (Local) is thinking... 💭"
+    supervisor_thinking_icon = "★ Supervisor (Remote) is thinking... 💭"
     
     # Constants for emoji icons to ensure consistency
     WORKER_EMOJI = "👨‍💻"
     SUPERVISOR_EMOJI = "👩‍💼"
     SYSTEM_EMOJI = "🔄"
     CALL_EMOJI = "📞"
+    SAVE_EMOJI = "💾"
+    WARNING_EMOJI = "⚠️"
+    SUCCESS_EMOJI = "✅"
+    ERROR_EMOJI = "❌"
+    THINKING_EMOJI = "💭"
+    QUESTION_EMOJI = "❓"
+    SPEAKING_EMOJI = "💬"
+    CODE_EMOJI = "📝"
+    SEND_EMOJI = "📤"
+    RECEIVE_EMOJI = "📥"
+    
+    # Message action icons
+    COPY_ICON = "📋"
+    REPLY_ICON = "↩️"
+    DELETE_ICON = "🗑️"
+    EDIT_ICON = "✏️"
+    FORWARD_ICON = "➡️"
     
     # For saving conversation history
     conversation_history_dir = "conversation_history"
@@ -42,7 +59,7 @@ class MessageHandlers:
             
         # Update UI to indicate history preservation status if needed
         if hasattr(app, 'status_label'):
-            history_status = "History: Preserved" if MessageHandlers.preserve_history else "History: Not Preserved"
+            history_status = f"{MessageHandlers.SAVE_EMOJI} History: Preserved" if MessageHandlers.preserve_history else f"{MessageHandlers.SAVE_EMOJI} History: Not Preserved"
             if not app.call_active:
                 app.status_label.config(text=history_status)
                 
@@ -194,117 +211,37 @@ class MessageHandlers:
     @staticmethod
     def append_to_response(app, text):
         """Append text to the response area."""
-        # Check if this is a thinking status message that should be filtered
-        if MessageHandlers.worker_thinking_icon in text and app.model_label != "Worker (Local)":
-            # Don't show Worker thinking message in Supervisor app
+        if not hasattr(app, 'response_text') or not app.response_text.winfo_exists():
             return
-        elif MessageHandlers.supervisor_thinking_icon in text and app.model_label != "Supervisor (Remote)":
-            # Don't show Supervisor thinking message in Worker app
-            return
-        
-        # Determine if this is a message from the conversation
-        is_conversation_message = not (
-            MessageHandlers.worker_thinking_icon in text or 
-            MessageHandlers.supervisor_thinking_icon in text
-        )
-        
-        # Special handling for worker and supervisor messages
-        if is_conversation_message:
-            if text.startswith(f"[Worker]:") and app.model_label != "Worker (Local)":
-                # Worker conversation belongs only in the Worker app
-                if app.connected_to and app.connected_to.model_label == "Worker (Local)":
-                    # Forward this message to the Worker app
-                    app.connected_to.append_to_response(text)
-                return  # Don't display in current app
             
-            if text.startswith(f"[Supervisor]:") and app.model_label != "Supervisor (Remote)":
-                # Supervisor conversation belongs only in the Supervisor app
-                if app.connected_to and app.connected_to.model_label == "Supervisor (Remote)":
-                    # Forward this message to the Supervisor app
-                    app.connected_to.append_to_response(text)
-                return  # Don't display in current app
-        
-        # Special handling for thinking messages
-        if (MessageHandlers.worker_thinking_icon in text and app.model_label == "Worker (Local)") or \
-           (MessageHandlers.supervisor_thinking_icon in text and app.model_label == "Supervisor (Remote)"):
-            # For thinking messages, we want to update or add the thinking indicator
-            app.is_thinking = True
-            
-            # Remove any existing thinking indicators (in a way that preserves other content)
-            MessageHandlers._remove_thinking_indicators(app)
-            
-            # Add the appropriate thinking indicator
-            thinking_tag = "worker_thinking" if MessageHandlers.worker_thinking_icon in text else "supervisor_thinking"
-            thinking_text = MessageHandlers.worker_thinking_icon if MessageHandlers.worker_thinking_icon in text else MessageHandlers.supervisor_thinking_icon
-            
-            # Add the thinking indicator in a way that persists
-            MessageHandlers._preserve_thinking_indicator(app, thinking_text, thinking_tag)
-            
-            # Also update the status label
-            app.status_label.config(text=thinking_text)
-            
-            # Start the thinking animation updates
-            app.root.after(100, lambda: MessageHandlers._delayed_thinking_update(app))
-            return
-        
-        # Handle explicit "Processing complete" messages
-        if "@Worker: Processing complete" in text and app.model_label == "Worker (Local)":
-            app.is_thinking = False
-            app.status_label.config(text="Processing complete")
-            if app.connected_to:
-                # Just update the status in the connected app, don't display the message
-                app.connected_to.root.after(0, lambda: app.connected_to.status_label.config(text="Processing complete"))
-            return  # Don't actually display this message
-        
-        # Normal display of messages for the current app
-        app.response_text.config(state=tk.NORMAL)
-        
-        # First, remove any thinking indicators
-        MessageHandlers._remove_thinking_indicators(app)
-        
-        # Get current timestamp for the message
+        # Get current timestamp
         current_time = datetime.now().strftime("%H:%M:%S")
         
-        # Figure out who's sending the message
-        sender = None
+        # Determine sender based on app model
+        sender = "worker" if app.model_label == "Worker (Local)" else "supervisor"
         
-        if text.startswith("[Worker]:"):
-            # Extract the actual message without the prefix
-            text = text[len("[Worker]:"):].strip()
-            sender = "worker"
-        elif text.startswith("[Supervisor]:"):
-            # Extract the actual message without the prefix
-            text = text[len("[Supervisor]:"):].strip()
-            sender = "supervisor"
-        else:
-            # Determine based on which app we're in
-            sender = "worker" if app.model_label == "Worker (Local)" else "supervisor"
-        
-        # Determine if this is a new message or continuing conversation
-        starting_new_segment = True
-        if MessageHandlers.preserve_history:
-            current_text = app.response_text.get("1.0", tk.END).strip()
-            starting_new_segment = (not current_text) or current_text.endswith("═" * 40) or current_text.endswith("─" * 40)
-        
-        # Add appropriate spacing
-        if MessageHandlers.preserve_history and not starting_new_segment:
-            # If we're preserving history and there's existing content,
-            # add a nice visual separator between message segments
-            app.response_text.insert(tk.END, "\n\n", "")
-        
-        # Format the message for better quality
-        # Clean and format the text for better readability
+        # Improve quality of the message text where appropriate
         formatted_text = MessageHandlers._improve_message_quality(text)
+        
+        # Enable editing of the text widget
+        app.response_text.config(state=tk.NORMAL)
         
         # Add message header with timestamp and role icon
         if sender == "worker":
             is_question = ("?" in text and not "Waiting for" in text)
             header_text = f"[{current_time}] {MessageHandlers.WORKER_EMOJI} Worker"
-            header_text += " asks:" if is_question else " says:"
-            app.response_text.insert(tk.END, header_text + "\n", "worker_header")
+            header_text += f" {MessageHandlers.QUESTION_EMOJI}:" if is_question else f" {MessageHandlers.SPEAKING_EMOJI}:"
+            
+            # Add interactive action buttons to header
+            app.response_text.insert(tk.END, header_text + "  ", "worker_header")
+            app.response_text.insert(tk.END, f"{MessageHandlers.COPY_ICON} ", "message_action")
+            app.response_text.insert(tk.END, f"{MessageHandlers.REPLY_ICON} ", "message_action")
+            app.response_text.insert(tk.END, "\n", "")
             
             # Check and apply special code block formatting if needed
             if "<<<CODE_BLOCK_START:" in formatted_text:
+                # Add code block icon
+                app.response_text.insert(tk.END, f"{MessageHandlers.CODE_EMOJI} ", "code_icon")
                 # If it contains code blocks, apply special formatting
                 if not MessageHandlers._apply_code_block_formatting(app, formatted_text):
                     # Fallback if code block formatting fails
@@ -314,14 +251,22 @@ class MessageHandlers:
                 app.response_text.insert(tk.END, formatted_text, "worker_message")
             
             app.response_text.insert(tk.END, "\n", "")  # Add newline after message
-        else:  # supervisor
+            
+        elif sender == "supervisor":
             is_question = ("?" in text and not "Waiting for" in text)
             header_text = f"[{current_time}] {MessageHandlers.SUPERVISOR_EMOJI} Supervisor"
-            header_text += " asks:" if is_question else " says:"
-            app.response_text.insert(tk.END, header_text + "\n", "supervisor_header")
+            header_text += f" {MessageHandlers.QUESTION_EMOJI}:" if is_question else f" {MessageHandlers.SPEAKING_EMOJI}:"
+            
+            # Add interactive action buttons to header
+            app.response_text.insert(tk.END, header_text + "  ", "supervisor_header")
+            app.response_text.insert(tk.END, f"{MessageHandlers.COPY_ICON} ", "message_action")
+            app.response_text.insert(tk.END, f"{MessageHandlers.REPLY_ICON} ", "message_action")
+            app.response_text.insert(tk.END, "\n", "")
             
             # Check and apply special code block formatting if needed
             if "<<<CODE_BLOCK_START:" in formatted_text:
+                # Add code block icon
+                app.response_text.insert(tk.END, f"{MessageHandlers.CODE_EMOJI} ", "code_icon")
                 # If it contains code blocks, apply special formatting
                 if not MessageHandlers._apply_code_block_formatting(app, formatted_text):
                     # Fallback if code block formatting fails
@@ -331,23 +276,20 @@ class MessageHandlers:
                 app.response_text.insert(tk.END, formatted_text, "supervisor_message")
             
             app.response_text.insert(tk.END, "\n", "")  # Add newline after message
-        
-        # Add a subtle separator after each message in history mode
-        if MessageHandlers.preserve_history:
-            app.response_text.insert(tk.END, "─" * 50 + "\n", "light_separator")
-        
-        # Make sure the new text is visible by forcing auto-scroll
-        MessageHandlers._ensure_autoscroll(app)
-        app.response_text.config(state=tk.DISABLED)
-        
-        # Update the status label to indicate who's speaking
-        if sender == "worker":
-            status_text = "Worker asking" if "?" in text else "Worker speaking"
-            app.status_label.config(text=status_text)
+            
         else:
-            status_text = "Supervisor asking" if "?" in text else "Supervisor speaking"
-            app.status_label.config(text=status_text)
+            # System message with icon
+            app.response_text.insert(tk.END, f"[{current_time}] {MessageHandlers.SYSTEM_EMOJI} System: ", "system_header")
+            app.response_text.insert(tk.END, formatted_text + "\n", "system_message")
+            
+        # Make sure the new content is visible
+        MessageHandlers._ensure_autoscroll(app)
         
+        # Disable editing after update
+        app.response_text.config(state=tk.DISABLED)
+            
+        return app.response_text.get("1.0", tk.END)
+    
     @staticmethod
     def show_thinking_in_response(app, is_thinking=True):
         """Shows or hides the thinking indicator in the response area."""
@@ -755,35 +697,31 @@ class MessageHandlers:
 
     @staticmethod
     def save_conversation_history(app):
-        """Save the conversation history to a JSON file.
-        
-        Args:
-            app: The application instance
-        
-        Returns:
-            The filename where the conversation was saved, or None if saving failed
-        """
-        # Create the conversation history directory if it doesn't exist
-        os.makedirs(MessageHandlers.conversation_history_dir, exist_ok=True)
-        
-        if not app.response_text.winfo_exists():
+        """Save the conversation history to a JSON file."""
+        # Ensure the directory exists
+        try:
+            os.makedirs(MessageHandlers.conversation_history_dir, exist_ok=True)
+        except Exception as e:
+            print(f"Error creating directory: {e}")
+            if hasattr(app, 'status_label'):
+                app.status_label.config(text=f"{MessageHandlers.ERROR_EMOJI} Error creating directory")
             return None
             
-        # Get the current content of the response text widget
-        app.response_text.config(state=tk.NORMAL)
-        content = app.response_text.get("1.0", tk.END)
-        app.response_text.config(state=tk.DISABLED)
-        
-        # Don't save if the content is empty or just contains thinking indicators
-        if not content.strip() or content.strip() == MessageHandlers.worker_thinking_icon or content.strip() == MessageHandlers.supervisor_thinking_icon:
+        # Get conversation text
+        if not hasattr(app, 'response_text') or not app.response_text.winfo_exists():
             return None
             
-        # Prepare the conversation data
+        conversation_text = app.response_text.get("1.0", tk.END)
+        if not conversation_text.strip():
+            return None
+            
+        # Prepare data structure
         conversation_data = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "app_type": app.model_label,
-            "content": content,
-            "duration": app.duration_label.cget("text") if hasattr(app, "duration_label") else None
+            "app_type": "worker" if app.model_label == "Worker (Local)" else "supervisor",
+            "model_name": app.model_name,
+            "conversation_text": conversation_text,
+            "call_duration": app.call_duration if hasattr(app, 'call_duration') else None
         }
         
         # Generate a filename with timestamp and app type
@@ -797,11 +735,11 @@ class MessageHandlers:
             
             # Provide feedback on successful save
             if hasattr(app, 'status_label'):
-                app.status_label.config(text=f"Conversation saved to {os.path.basename(filename)}")
+                app.status_label.config(text=f"{MessageHandlers.SAVE_EMOJI} Conversation saved to {os.path.basename(filename)}")
                 
             return filename
         except Exception as e:
             print(f"Error saving conversation history: {e}")
             if hasattr(app, 'status_label'):
-                app.status_label.config(text=f"Error saving conversation: {str(e)}")
+                app.status_label.config(text=f"{MessageHandlers.ERROR_EMOJI} Error saving conversation: {str(e)}")
             return None 
