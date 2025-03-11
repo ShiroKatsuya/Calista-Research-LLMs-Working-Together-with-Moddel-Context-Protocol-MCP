@@ -459,14 +459,23 @@ class MinionTerminal:
         # Parse the message as if it were command line arguments
         class Args:
             def __init__(self, message):
-                self.prompt = message
-                self.model = "worker"  # Default model
+                self.task = message
+                self.full_messages = True
+                self.no_color = True
+                # Keep these additional attributes if needed
+                self.model = None
                 self.api_key = None
                 self.system_prompt = None
                 self.load_path = None
                 self.save_path = None
                 self.no_stream = False
                 self.verbose = True
+                
+            def __str__(self):
+                return self.task
+            
+            def __repr__(self):
+                return f"Args(task='{self.task}')"
                 
         args = Args(message)
         
@@ -516,7 +525,7 @@ class MinionTerminal:
             self.output_text.delete("1.0", tk.END)
             
             # Add the command to the output
-            self.output_text.insert(tk.END, f"$ Executing: {args.prompt}\n\n", "command")
+            self.output_text.insert(tk.END, f"$ Executing: {args.task}\n\n", "command")
             
             # Run the task with the provided arguments
             task(args)
