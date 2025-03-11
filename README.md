@@ -112,6 +112,58 @@ output = minion(
 )
 ```
 
+## Streaming Output
+
+To enable real-time streaming of response output as it's being generated, you can use the `stream_output` parameter:
+
+```python
+from minions.clients.openai import OpenAIClient
+from minions.minion import Minion
+
+# Enable streaming in the client
+openai_client = OpenAIClient(
+    model_name="gpt-4o",
+    stream=True  # Enable streaming in the client
+)
+
+# Create the minion with streaming enabled
+minion = Minion(
+    local_client=openai_client,
+    remote_client=openai_client,
+    stream_output=True  # Enable streaming in the Minion
+)
+
+# Now responses will print incrementally in real-time
+result = minion(
+    task="Generate a short poem about artificial intelligence",
+    context=["Make it thoughtful but accessible to general audiences"]
+)
+```
+
+You can also provide a custom callback function for more control over how streaming content is displayed:
+
+```python
+def custom_callback(agent_type, chunk, is_streaming=False, is_final=False):
+    """Custom callback to handle streaming output."""
+    if is_streaming:
+        # Process streaming chunks in real-time
+        # For example, you could format or colorize the output
+        pass
+    elif chunk:
+        # Handle complete responses
+        print(f"\n[{agent_type}] COMPLETE RESPONSE: {chunk}\n")
+
+# Create the minion with custom callback
+minion = Minion(
+    local_client=openai_client,
+    remote_client=openai_client,
+    callback=custom_callback,
+    stream_output=True
+)
+```
+
+See the `examples/stream_example.py` file for a complete example.
+
 ## Example Code: Minions (plural)
 
 The following example is for an `ollama` local client and an `openai` remote client.

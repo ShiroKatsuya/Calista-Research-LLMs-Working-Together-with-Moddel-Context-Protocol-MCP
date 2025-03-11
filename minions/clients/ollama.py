@@ -1,10 +1,11 @@
 import logging
 from typing import Any, Dict, List, Optional, Union, Tuple
 import asyncio
+import functools
 
 from pydantic import BaseModel
 
-from minions.usage import Usage
+from minions.clients.base import Usage
 
 
 class OllamaClient:
@@ -32,67 +33,62 @@ class OllamaClient:
         if structured_output_schema:
             self.format_structured_output = structured_output_schema.model_json_schema()
 
-        # For async calls
-        from ollama import AsyncClient
-        self.client = AsyncClient() if use_async else None
+        # For async calls - lazy initialized
+        self._async_client = None
+        
+        # Cache for model availability check
+        self._model_available = False
 
         # Ensure model is pulled
         self._ensure_model_available()
 
-    def _ensure_model_available(self):
+    @property
+    def async_client(self):
+        """Lazy initialization of async client."""
+        if self._async_client is None and self.use_async:
+            from ollama import AsyncClient
+            self._async_client = AsyncClient()
+        return self._async_client
+
+    @functools.lru_cache(maxsize=1)
+    def _prepare_options(self) -> Dict[str, Any]:
+        """Prepare options for Ollama API call with caching."""
+        options = {}
+        
+        if self.format_structured_output:
+            options["format"] = "json"
+            options["system"] = (
+                f"Format your entire response as JSON. "
+                f"Use the following JSON schema: {self.format_structured_output}"
+            )
+            
+        return options
+
+    def _ensure_model_available(self) -> None:
+        """Ensure the specified model is available locally."""
+        if self._model_available:
+            return
+            
         import ollama
         try:
+            # Use a quick, minimal test to check if model is available
             ollama.chat(
                 model=self.model_name,
                 messages=[{"role": "system", "content": "test"}]
             )
+            self._model_available = True
         except ollama.ResponseError as e:
-            if e.status_code == 404:
-                self.logger.info(
-                    f"Model {self.model_name} not found locally. Pulling..."
-                )
-                ollama.pull(self.model_name)
-                self.logger.info(f"Successfully pulled model {self.model_name}")
+            if "no model found with name" in str(e).lower():
+                self.logger.info(f"Model {self.model_name} not found. Attempting to pull...")
+                try:
+                    ollama.pull(self.model_name)
+                    self._model_available = True
+                    self.logger.info(f"Successfully pulled model {self.model_name}")
+                except Exception as pull_error:
+                    self.logger.error(f"Failed to pull model {self.model_name}: {pull_error}")
+                    raise
             else:
-                raise
-
-    def _prepare_options(self):
-        """Common chat options for both sync and async calls."""
-        opts = {
-            "temperature": self.temperature,
-            "num_predict": self.max_tokens,
-            "num_ctx": self.num_ctx,
-        }
-        chat_kwargs = {"options": opts}
-        if self.format_structured_output:
-            chat_kwargs["format"] = self.format_structured_output
-        return chat_kwargs
-
-    #
-    #  ASYNC
-    #
-    def achat(
-            self,
-            messages: Union[List[Dict[str, Any]], Dict[str, Any]],
-            **kwargs,
-        ) -> Tuple[List[str], List[Usage], List[str]]:
-            """
-            Wrapper for async chat. Runs `asyncio.run()` internally to simplify usage.
-            """
-            if not self.use_async:
-                raise RuntimeError("This client is not in async mode. Set `use_async=True`.")
-
-            try:
-                return asyncio.run(self._achat_internal(messages, **kwargs))
-            except RuntimeError as e:
-                if "Event loop is closed" in str(e):
-                    # Create a new event loop and set it as the current one
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        return loop.run_until_complete(self._achat_internal(messages, **kwargs))
-                    finally:
-                        loop.close()
+                self.logger.error(f"Error checking model availability: {e}")
                 raise
 
     async def _achat_internal(
@@ -101,38 +97,69 @@ class OllamaClient:
         **kwargs,
     ) -> Tuple[List[str], Usage, List[str]]:
         """
-        Handle async chat with multiple messages in parallel.
+        Internal async chat implementation. Takes a list of messages and returns responses.
         """
-        # If the user provided a single dictionary, wrap it in a list.
+        # Import here to avoid importing if not needed
+        import asyncio
+        
+        # Make sure we have the async client
+        if not self.async_client:
+            from ollama import AsyncClient
+            self._async_client = AsyncClient()
+            
+        # If the user provided a single dictionary, wrap it
         if isinstance(messages, dict):
             messages = [messages]
 
-        # Now we have a list of dictionaries. We'll call them in parallel.
         chat_kwargs = self._prepare_options()
-        async def process_one(msg):
-            resp = await self.client.chat(
-                model=self.model_name,
-                messages=[msg],  # each call with exactly one message
-                **chat_kwargs,
-                **kwargs
-            )
-            return resp
         
-        # Run them all in parallel
-        results = await asyncio.gather(*(process_one(m) for m in messages))
+        # Filter out temperature from kwargs as it's not supported by ollama.chat()
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'temperature'}
+        
+        # Combine with any passed kwargs
+        chat_kwargs.update(filtered_kwargs)
 
-        # Gather them back
-        texts = []
-        usage_total = Usage()
-        done_reasons = []
-        for r in results:
-            texts.append(r["message"]["content"])
-            usage_total += Usage(prompt_tokens=r["prompt_eval_count"],
-                             completion_tokens=r["eval_count"])
-            done_reasons.append(r["done_reason"])
+        async def process_one(msg):
+            try:
+                response = await self.async_client.chat(
+                    model=self.model_name,
+                    messages=msg,
+                    **chat_kwargs,
+                )
+                return (
+                    response["message"]["content"],
+                    Usage(
+                        prompt_tokens=response["prompt_eval_count"],
+                        completion_tokens=response["eval_count"],
+                    ),
+                    response["done_reason"],
+                )
+            except Exception as e:
+                self.logger.error(f"Error during async Ollama API call: {e}")
+                raise
 
-        return texts, usage_total, done_reasons
+        # Use asyncio.gather for parallel processing if multiple message sets
+        results = await asyncio.gather(*(process_one([m]) for m in messages))
+        
+        # Unzip the results
+        contents, usages, done_reasons = zip(*results)
+        
+        # Sum up all usages
+        total_usage = sum(usages, Usage())
+        
+        return list(contents), total_usage, list(done_reasons)
 
+    async def achat(
+        self,
+        messages: Union[List[Dict[str, Any]], Dict[str, Any]],
+        **kwargs,
+    ) -> Tuple[List[str], List[Usage], List[str]]:
+        """
+        Handle asynchronous chat completions. If you pass a list of message dicts,
+        we do one call for that entire conversation. If you pass a single dict,
+        we wrap it in a list.
+        """
+        return await self._achat_internal(messages, **kwargs)
 
     def schat(
         self,
@@ -140,46 +167,77 @@ class OllamaClient:
         **kwargs,
     ) -> Tuple[List[str], Usage, List[str]]:
         """
-        Handle synchronous chat completions. If you pass a list of message dicts,
-        we do one call for that entire conversation. If you pass a single dict,
-        we wrap it in a list so there's no error.
+        Synchronous implementation of chat. Takes a list of messages and returns responses.
         """
         import ollama
+        
         # If the user provided a single dictionary, wrap it
         if isinstance(messages, dict):
             messages = [messages]
-
-        # Now messages is a list of dicts, so we can pass it to Ollama in one go
+        
+        # Add options from self._prepare_options
         chat_kwargs = self._prepare_options()
-
+        
+        # Filter out temperature from kwargs as it's not supported by ollama.chat()
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'temperature'}
+        
         responses = []
         usage_total = Usage()
         done_reasons = []
-
+        
         try:
-            # We do one single call if you pass the entire conversation:
-            #   messages=[{'role': 'user', 'content': ...},
-            #             {'role': 'system', 'content': ...}, ...]
-            # If you want multiple calls, you can either:
-            #   (a) loop outside of this function, or
-            #   (b) pass a list-of-lists approach that you handle similarly
-            response = ollama.chat(
-                model=self.model_name,
-                messages=messages,
-                **chat_kwargs,
-                **kwargs,
-            )
-            responses.append(response["message"]["content"])
-            usage_total += Usage(
-                prompt_tokens=response["prompt_eval_count"],
-                completion_tokens=response["eval_count"],
-            )
-            done_reasons.append(response["done_reason"])
-
+            # Extract stream_callback if provided
+            stream_callback = filtered_kwargs.pop("stream_callback", None)
+            
+            # If streaming is requested
+            if stream_callback:
+                full_response = ""
+                # Process all messages in a single call for efficiency with streaming
+                for chunk in ollama.chat(
+                    model=self.model_name,
+                    messages=messages,
+                    stream=True,
+                    **chat_kwargs,
+                    **filtered_kwargs,
+                ):
+                    if "message" in chunk and "content" in chunk["message"]:
+                        content = chunk["message"]["content"]
+                        stream_callback(content)
+                        full_response += content
+                
+                # At the end, return the full response
+                responses.append(full_response)
+                # We still need to get usage data, so make one more non-streaming call
+                # but with system-only instruction to avoid generating more content
+                response = ollama.chat(
+                    model=self.model_name,
+                    messages=[{"role": "system", "content": "Usage stats only"}],
+                    **chat_kwargs,
+                )
+                usage_total += Usage(
+                    prompt_tokens=response["prompt_eval_count"],
+                    completion_tokens=response["eval_count"],
+                )
+                done_reasons.append("stop")
+            else:
+                # Process all messages in a single call for efficiency
+                response = ollama.chat(
+                    model=self.model_name,
+                    messages=messages,
+                    **chat_kwargs,
+                    **filtered_kwargs,
+                )
+                responses.append(response["message"]["content"])
+                usage_total += Usage(
+                    prompt_tokens=response["prompt_eval_count"],
+                    completion_tokens=response["eval_count"],
+                )
+                done_reasons.append(response["done_reason"])
+                
         except Exception as e:
             self.logger.error(f"Error during Ollama API call: {e}")
             raise
-
+        
         return responses, usage_total, done_reasons
     
     def chat(
@@ -188,11 +246,11 @@ class OllamaClient:
         **kwargs,
     ) -> Tuple[List[str], Usage, List[str]]:
         """
-        Handle synchronous chat completions. If you pass a list of message dicts,
-        we do one call for that entire conversation. If you pass a single dict,
-        we wrap it in a list so there's no error.
+        Handle chat completions. Delegates to async or sync implementation based on configuration.
         """
         if self.use_async:
-            return self.achat(messages, **kwargs)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.achat(messages, **kwargs))
         else:
             return self.schat(messages, **kwargs)

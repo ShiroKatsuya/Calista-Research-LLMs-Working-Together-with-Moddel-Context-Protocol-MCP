@@ -1,0 +1,7 @@
+{
+  "timestamp": "2025-03-09 17:52:32",
+  "app_type": "worker",
+  "model_name": "llama3.2:1b",
+  "conversation_text": "[17:52:15] 📞 Call starting...\n\n",
+  "call_duration": 16
+}

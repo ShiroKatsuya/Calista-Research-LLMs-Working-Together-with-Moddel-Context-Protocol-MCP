@@ -6,9 +6,7 @@ import sys
 from typing import Dict, Any, Set
 
 
-
-
-def main(task: str = None) -> None:
+def main(task: str) -> None:
     """
     Main function to run the minion conversation system with a given task.
     
@@ -17,29 +15,13 @@ def main(task: str = None) -> None:
     """
     # Add command line arguments for display options
     parser = argparse.ArgumentParser(description='Run minions conversation with display options')
-    parser.add_argument('task', nargs='?', default=task or "Tell me about the Fermi Paradox and why we haven't found alien life yet.", 
-                        help='The task/question to be answered by the minion system')
     parser.add_argument('--full-messages', action='store_true', help='Display full messages without truncation')
     parser.add_argument('--no-color', action='store_true', help='Disable colored output')
-    
-    # If running from command line, parse args; otherwise, use provided args
-    if 'pytest' not in sys.modules and len(sys.argv) > 1:
-        args = parser.parse_args()
-    else:
-        # For testing or when called programmatically
-        class Args:
-            pass
-        args = Args()
-        args.task = task or "Tell me about the Fermi Paradox and why we haven't found alien life yet."
-        args.full_messages = getattr(parser.parse_args([]), 'full_messages', False)
-        args.no_color = getattr(parser.parse_args([]), 'no_color', False)
-
-    # Use the task from args
-    task = args.task
+    args = parser.parse_args()
 
     # Configure the clients with appropriate parameters
     local_client = OllamaClient(
-        model_name="llama3.2:1b",
+        model_name="deepseek-r1:1.5b",
         temperature=0.2,  # Lower temperature for more deterministic outputs
     )
         
@@ -149,9 +131,7 @@ def truncate_content(content: str, max_length: int, full_messages: bool) -> str:
     Returns:
         Truncated or full content string
     """
-    if full_messages:
-        return content.strip()
-    if len(content) > max_length:
+    if len(content) > max_length and not full_messages:
         return f"{content.strip()[:max_length]}...\n(Use --full-messages to see complete content)"
     return content.strip()
 
@@ -214,10 +194,8 @@ def display_conversation(output: Dict[str, Any], args) -> None:
     print("=" * 80)
 
     # Print helpful message about command-line options
-    if not args.full_messages:
-        print("\nTIP: Run with --full-messages to see complete messages without truncation")
-    if not args.no_color:
-        print("TIP: Run with --no-color to disable colored output")
+    print("\nTIP: Run with --full-messages to see complete messages without truncation")
+    print("     Run with --no-color to disable colored output")
 
 
 def display_initial_task(task_content: str, full_messages: bool) -> None:
@@ -230,7 +208,7 @@ def display_initial_task(task_content: str, full_messages: bool) -> None:
     print(colorize("🔷 INITIAL TASK:", Colors.BOLD + Colors.BLUE))
     print("-" * 80)
     initial_content = clean_content(task_content)
-    print(truncate_content(initial_content, 1000, full_messages))
+    print(truncate_content(initial_content, 200, full_messages))
     print("-" * 80 + "\n")
 
 
@@ -248,7 +226,7 @@ def process_supervisor_question(supervisor_messages, idx, used_questions, full_m
         if content_key not in used_questions:
             used_questions.add(content_key)
             print(colorize("Supervisor (Remote) asks:", Colors.BOLD + Colors.BLUE))
-            print(truncate_content(content, 2000, full_messages))
+            print(truncate_content(content, 300, full_messages))
             print()
             return True
     return False
@@ -275,7 +253,7 @@ def process_worker_answer(worker_messages, idx, used_answers, full_messages):
                 base_phrase = phrase.replace("⚡ ", "")
                 content = content.replace(base_phrase, colorize(phrase, Colors.BOLD + Colors.YELLOW))
             
-            print(truncate_content(content, 2000, full_messages))
+            print(truncate_content(content, 300, full_messages))
             print()
             return True
     return False
@@ -302,7 +280,7 @@ def process_worker_question(worker_messages, idx, used_questions, full_messages)
             else:
                 print(colorize("★ Worker (Local) asks: ★", Colors.BOLD + Colors.GREEN + Colors.UNDERLINE))
             
-            print(truncate_content(content, 2000, full_messages))
+            print(truncate_content(content, 300, full_messages))
             print()
             return True
     return False
@@ -322,12 +300,12 @@ def process_supervisor_answer(supervisor_messages, idx, used_answers, full_messa
         if content_key not in used_answers:
             used_answers.add(content_key)
             print(colorize("Supervisor (Remote) answers:", Colors.BOLD + Colors.BLUE))
-            print(truncate_content(content, 2000, full_messages))
+            print(truncate_content(content, 300, full_messages))
             print()
             return True
     return False
 
 
 if __name__ == "__main__":
-    # Run the main function (argument parsing happens inside main)
-    main()
+    # Example task if no arguments provided
+    main("What is the capital of France?")

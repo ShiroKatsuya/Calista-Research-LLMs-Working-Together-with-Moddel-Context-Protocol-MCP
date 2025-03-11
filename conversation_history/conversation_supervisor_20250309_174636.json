@@ -1,0 +1,7 @@
+{
+  "timestamp": "2025-03-09 17:46:36",
+  "app_type": "supervisor",
+  "model_name": "llama3.2:3b",
+  "conversation_text": "[17:45:51] 📞 Call starting...\n\n\n\n",
+  "call_duration": 89
+}

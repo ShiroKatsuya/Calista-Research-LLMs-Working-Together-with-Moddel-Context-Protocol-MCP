@@ -4,6 +4,7 @@ import re
 import os
 import time
 from datetime import datetime
+import importlib.util
 
 from minions.clients import OpenAIClient, TogetherClient
 from minions.clients.base import BaseClient
@@ -187,6 +188,39 @@ def _aggressive_json_repair(json_str: str) -> str:
     return fixed
 
 
+# Check if deep_translator is installed
+def is_translator_available():
+    """Check if deep_translator package is available."""
+    return importlib.util.find_spec("deep_translator") is not None
+
+# Function to translate text with better error handling
+def translate_text(text: str, target_language: str) -> str:
+    """
+    Translate text to target language with robust error handling.
+    
+    Args:
+        text: Text to translate
+        target_language: Target language code (e.g., 'id' for Indonesian)
+        
+    Returns:
+        Translated text or original text if translation fails
+    """
+    if not is_translator_available():
+        print(colorize("Warning: deep_translator package is not installed. " +
+                      "Run 'pip install deep_translator' to enable translation.", Colors.YELLOW))
+        return text
+    
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source='auto', target=target_language).translate(text)
+    except ImportError:
+        print(colorize("Error: deep_translator package is not installed properly. " +
+                      "Run 'pip install deep_translator' to enable translation.", Colors.RED))
+        return text
+    except Exception as e:
+        print(colorize(f"Translation error: {str(e)}", Colors.RED))
+        return text
+
 class Minion:
     """
     Minion class for orchestrating conversations between a local and remote LLM client.
@@ -199,6 +233,7 @@ class Minion:
         max_rounds: Optional[int] = 5,
         callback: Optional[Callable] = None,
         log_dir: str = "minion_logs",
+        translate_to: Optional[str] = None,
     ):
    
         self.local_client = local_client
@@ -206,6 +241,7 @@ class Minion:
         self.max_rounds = max_rounds or 5  # Default to 5 rounds if None
         self.callback = callback
         self.log_dir = log_dir
+        self.translate_to = translate_to  # Language code for translation (e.g., 'id' for Indonesian)
 
         # Create log directory if it doesn't exist
         os.makedirs(log_dir, exist_ok=True)
@@ -216,6 +252,11 @@ class Minion:
         
         # Cache for expensive operations
         self._session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Check if translator is available and warn if not
+        if translate_to and not is_translator_available():
+            print(colorize("Warning: Translation requested but deep_translator package is not installed. " +
+                          "Run 'pip install deep_translator' to enable translation.", Colors.YELLOW))
 
     def __call__(
         self,
@@ -225,6 +266,7 @@ class Minion:
         doc_metadata: Optional[Dict[str, Any]] = None,
         logging_id: Optional[str] = None,  # this is the name/id to give to the logging .json file
         is_privacy: bool = False,
+        translate_to: Optional[str] = None,  # Language code to translate to
     ) -> Dict[str, Any]:
         """Run the minion protocol to answer a task using local and remote models.
 
@@ -235,11 +277,31 @@ class Minion:
             doc_metadata: Optional metadata about the documents
             logging_id: Optional identifier for the task, used for named log files
             is_privacy: Whether to use privacy shield
+            translate_to: Language code to translate responses to (overrides instance setting)
 
         Returns:
             Dict containing final_answer, conversation histories, and usage statistics
         """
         start_time = time.time()
+        
+        # Set translation language for this call - default to Indonesian ('id') if not specified
+        active_translation = translate_to or self.translate_to or 'id'
+        
+        # Check if translator is available if translation is requested
+        if active_translation and not is_translator_available():
+            print(colorize(f"Warning: Translation to '{active_translation}' requested but deep_translator package is not installed. " +
+                          "Installing required package...", Colors.YELLOW))
+            
+            # Try to install the package
+            try:
+                import subprocess
+                subprocess.check_call(['pip', 'install', 'deep_translator'])
+                print(colorize("Successfully installed deep_translator package.", Colors.GREEN))
+            except Exception as e:
+                print(colorize(f"Failed to install deep_translator: {str(e)}", Colors.RED))
+                print(colorize("Please install manually with: pip install deep_translator", Colors.RED))
+                print(colorize("Continuing without translation...", Colors.YELLOW))
+                active_translation = None
         
         if max_rounds is None:
             max_rounds = self.max_rounds
@@ -260,6 +322,7 @@ class Minion:
             "metadata": {
                 "timestamp": self._session_timestamp,
                 "document_metadata": doc_metadata or {},
+                "translation": active_translation,
             }
         }
 
@@ -277,7 +340,9 @@ class Minion:
             self.callback("supervisor", None, is_final=False)
 
         # Get first supervisor question
-        supervisor_response, supervisor_usage = self._get_supervisor_response(supervisor_messages)
+        supervisor_response, supervisor_usage = self._get_supervisor_response(
+            supervisor_messages, active_translation
+        )
         remote_usage += supervisor_usage
         
         # Add supervisor's first question to the conversation
@@ -297,7 +362,8 @@ class Minion:
             conversation_log,
             local_usage,
             remote_usage,
-            is_privacy
+            is_privacy,
+            active_translation
         )
 
         # Save the conversation log
@@ -395,7 +461,7 @@ class Minion:
     
 
     
-    def _get_supervisor_response(self, supervisor_messages: List[Dict[str, str]]):
+    def _get_supervisor_response(self, supervisor_messages: List[Dict[str, str]], translate_to: Optional[str] = None):
         """Get response from the supervisor model with appropriate handling for different client types."""
         try:
             # Set up streaming for supervisor response
@@ -409,8 +475,6 @@ class Minion:
             
             # Display that the supervisor is thinking
             print(colorize("\nSupervisor (Remote) is thinking...", Colors.BOLD + Colors.BLUE))
-
-            from deep_translator import GoogleTranslator 
             
             # Check if client supports response format parameter (like OpenAI)
             if hasattr(self.remote_client, "supports_response_format") and self.remote_client.supports_response_format:
@@ -428,7 +492,18 @@ class Minion:
             # Clear the buffer with a newline
             print("\n")
 
-            # Process supervisor response
+            # Translate supervisor response if needed
+            if translate_to:
+                original_response = supervisor_response[0]
+                translated_response = translate_text(original_response, translate_to)
+                
+                # Print both original and translated responses for visibility
+                print(colorize(f"\n[Original supervisor response]:", Colors.BLUE))
+                print(original_response[:300] + "..." if len(original_response) > 300 else original_response)
+                print(colorize(f"\n[Translated supervisor response ({translate_to})]:", Colors.BLUE))
+                print(translated_response[:300] + "..." if len(translated_response) > 300 else translated_response)
+                
+                supervisor_response[0] = translated_response
             
             return supervisor_response, supervisor_usage
         except Exception as e:
@@ -465,7 +540,8 @@ class Minion:
         task: str,
         is_privacy: bool,
         pii_extracted: Optional[str] = None,
-        already_displayed: bool = False
+        already_displayed: bool = False,
+        translate_to: Optional[str] = None
     ):
         """Process the worker's response, handling privacy if needed and formatting the output."""
         # Check for response uniqueness
@@ -510,6 +586,19 @@ class Minion:
             
             if self.callback:
                 self.callback("worker", f"**_My output (post-privacy shield):_**\n\n{shielded_response}")
+        
+        # Translate worker response if needed
+        if translate_to:
+            original_response = worker_response[0]
+            translated_response = translate_text(original_response, translate_to)
+            
+            # Print both original and translated responses for visibility
+            print(colorize(f"\n[Original worker response]:", Colors.GREEN))
+            print(original_response[:300] + "..." if len(original_response) > 300 else original_response)
+            print(colorize(f"\n[Translated worker response ({translate_to})]:", Colors.GREEN))
+            print(translated_response[:300] + "..." if len(translated_response) > 300 else translated_response)
+            
+            worker_response = [translated_response]
         
         # Emphasize the response
         worker_response[0] = self._emphasize_worker_response(worker_response[0])
@@ -557,7 +646,8 @@ class Minion:
         worker_messages: List[Dict[str, str]],
         supervisor_messages: List[Dict[str, str]],
         conversation_log: Dict[str, Any],
-        worker_response: List[str]
+        worker_response: List[str],
+        translate_to: Optional[str] = None
     ) -> Tuple[bool, int]:
         """Handle worker follow-up questions if any."""
         # Create follow-up prompt
@@ -604,6 +694,12 @@ class Minion:
         # Add to used questions
         self.used_questions.add(question_key)
         
+        # Translate worker question if needed
+        if translate_to:
+            original_question = worker_question_response[0]
+            translated_question = translate_text(original_question, translate_to)
+            worker_question_response[0] = translated_question
+        
         # Format question
         emphasized_question = "★ WORKER QUESTION ★: " + worker_question_response[0]
         
@@ -638,7 +734,7 @@ class Minion:
         supervisor_messages.append({"role": "user", "content": supervisor_reply_prompt})
         
         # Get supervisor response
-        supervisor_reply, supervisor_usage = self._get_supervisor_response(supervisor_messages)
+        supervisor_reply, supervisor_usage = self._get_supervisor_response(supervisor_messages, translate_to)
         
         # Add to supervisor messages
         supervisor_messages.append({"role": "assistant", "content": supervisor_reply[0]})
@@ -671,7 +767,8 @@ class Minion:
         conversation_log: Dict[str, Any],
         local_usage: int,
         remote_usage: int,
-        is_privacy: bool
+        is_privacy: bool,
+        translate_to: Optional[str] = None
     ) -> str:
         """Run the main conversation rounds between worker and supervisor."""
         final_answer = None
@@ -716,12 +813,13 @@ class Minion:
             worker_response = self._process_worker_response(
                 worker_response, worker_messages, conversation_log, 
                 task, is_privacy, pii_extracted,
-                already_displayed=True  # Add this flag to indicate it's already been displayed
+                already_displayed=True,  # Add this flag to indicate it's already been displayed
+                translate_to=translate_to  # Pass translation language
             )
             
             # Check for worker follow-up questions
             had_followup, followup_usage = self._handle_worker_follow_up(
-                task, worker_messages, supervisor_messages, conversation_log, worker_response
+                task, worker_messages, supervisor_messages, conversation_log, worker_response, translate_to
             )
             
             local_usage += followup_usage
@@ -730,7 +828,7 @@ class Minion:
             if self.callback:
                 self.callback("remote", None, is_final=False)
                 
-            supervisor_response, supervisor_usage = self._get_supervisor_response(supervisor_messages)
+            supervisor_response, supervisor_usage = self._get_supervisor_response(supervisor_messages, translate_to)
             remote_usage += supervisor_usage
             
             # Add supervisor's question (it's already displayed since we streamed it)
@@ -760,7 +858,9 @@ class Minion:
                 })
                 
                 # Get supervisor's response
-                supervisor_response, supervisor_usage = self._get_supervisor_response(supervisor_messages)
+                supervisor_response, supervisor_usage = self._get_supervisor_response(
+                    supervisor_messages, translate_to
+                )
                 remote_usage += supervisor_usage
                 
                 # Parse supervisor's response
@@ -801,7 +901,7 @@ class Minion:
         
         # If we don't have a final answer yet, get one from the worker
         if not final_answer:
-            final_answer = self._generate_final_answer(task, worker_messages)
+            final_answer = self._generate_final_answer(task, worker_messages, translate_to)
             conversation_log["generated_final_answer"] = final_answer
         
         return final_answer
@@ -865,7 +965,7 @@ class Minion:
                 
         return None
     
-    def _generate_final_answer(self, task: str, worker_messages: List[Dict[str, str]]) -> str:
+    def _generate_final_answer(self, task: str, worker_messages: List[Dict[str, str]], translate_to: Optional[str] = None) -> str:
         """Generate a final answer if one wasn't provided during conversation."""
         final_answer_prompt = f"""
         Based on our conversation so far, please provide your final answer to the original task:
@@ -879,6 +979,19 @@ class Minion:
         final_answer_result, _, _ = self.local_client.chat(
             messages=worker_messages + [{"role": "user", "content": final_answer_prompt}]
         )
+        
+        # Translate final answer if needed
+        if translate_to:
+            original_answer = final_answer_result[0]
+            translated_answer = translate_text(original_answer, translate_to)
+            
+            # # Print both original and translated answers for visibility
+            # print(colorize(f"\n[Original final answer]:", Colors.BOLD))
+            # print(original_answer[:300] + "..." if len(original_answer) > 300 else original_answer)
+            print(colorize(f"\n[Translated final answer ({translate_to})]:", Colors.BOLD))
+            print(translated_answer)
+            
+            final_answer_result[0] = translated_answer
         
         return final_answer_result[0]
     
