@@ -12,7 +12,7 @@ def main():
     worker_root.iconify()  # Start minimized
     
     # Create worker app instance
-    worker_app = VoiceCallApp(worker_root, "llama3.2:1b", "Worker (Local)")
+    worker_app = VoiceCallApp(worker_root, "", "Worker (Local)")
     worker_app.model_label = "Worker (Local)"
     
     # Position window

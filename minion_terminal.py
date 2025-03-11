@@ -41,6 +41,9 @@ class AnsiColorizer:
         'purple': {'foreground': '#9c27b0'},
         'gray': {'foreground': '#9e9e9e'},
         'highlight': {'background': '#2c3e50', 'foreground': '#ecf0f1'},
+        # Enhanced thinking messages styling
+        'supervisor_thinking': {'foreground': '#8e44ad', 'font': ('Consolas', 10, 'bold')},
+        'worker_thinking': {'foreground': '#d35400', 'font': ('Consolas', 10, 'bold')},
     }
     
     def __init__(self, text_widget):
@@ -59,7 +62,21 @@ class AnsiColorizer:
     
     def apply_ansi_colors(self, text):
         """Apply ANSI colors to the text widget"""
-        # Find ANSI color codes in the text
+        # Special handling for thinking messages with ANSI codes
+        supervisor_pattern = r'\[1m\[94m\s*Supervisor \(Remote\) is thinking\.\.\.'
+        worker_pattern = r'\[1m\[92m\[4m\s*★ Worker \(Local\) is thinking\.\.\. ★'
+        
+        # Check for special messages
+        if re.search(supervisor_pattern, text):
+            clean_text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+            self.text_widget.insert(tk.END, clean_text, "supervisor_thinking")
+            return
+        elif re.search(worker_pattern, text):
+            clean_text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+            self.text_widget.insert(tk.END, clean_text, "worker_thinking")
+            return
+            
+        # Original ANSI processing for other text
         ansi_pattern = re.compile(r'\x1b\[([\d;]*)m')
         
         # Start position for inserting text
@@ -109,6 +126,10 @@ class TerminalTheme:
     BUTTON_BG = "#0E639C"
     BUTTON_HOVER = "#1177BB"
     
+    # Enhanced colors for thinking messages
+    SUPERVISOR_COLOR = "#9b59b6"  # Rich purple
+    WORKER_COLOR = "#e67e22"      # Vibrant orange
+    
     # Font settings
     FONT_FAMILY = "Consolas"
     FONT_SIZE = 10
@@ -122,6 +143,13 @@ class MinionTerminal:
         self.root.configure(bg=TerminalTheme.BG_COLOR)
         self.root.geometry("800x600")
         self.root.minsize(600, 400)
+        self.root.title("🤖 Minions AI Terminal")
+        
+        # Set application icon
+        try:
+            self.root.iconbitmap("assets/minion_icon.ico")
+        except:
+            pass  # Icon file not found, continue without it
         
         # Create a loading animation canvas
         self.loading_canvas = tk.Canvas(
@@ -144,6 +172,13 @@ class MinionTerminal:
         
         # Hide loading animation initially
         self.loading_canvas.place_forget()
+        
+        # Initialize conversation history
+        self.conversation_history = []
+        
+        # Animation variables for thinking indicators
+        self.thinking_animation_active = False
+        self.thinking_dots_count = 0
         
         # Initialize UI components
         self.setup_ui()
@@ -174,7 +209,7 @@ class MinionTerminal:
         
         self.title_label = tk.Label(
             self.title_frame,
-            text="🤖 Minions Terminal",
+            text="🤖 Minions AI Terminal",
             font=(TerminalTheme.FONT_FAMILY, TerminalTheme.FONT_SIZE_LARGE, "bold"),
             fg=TerminalTheme.TEXT_COLOR,
             bg=TerminalTheme.BG_COLOR
@@ -210,12 +245,18 @@ class MinionTerminal:
         self.toolbar = tk.Frame(self.main_frame, bg=TerminalTheme.PANEL_COLOR, height=30)
         self.toolbar.pack(fill=tk.X, pady=(0, 5))
         
-        # Create toolbar buttons
+        # Create toolbar buttons with improved icons
         self.clear_btn = self.create_toolbar_button(self.toolbar, "🗑️ Clear", self.clear_output)
         self.clear_btn.pack(side=tk.LEFT, padx=5, pady=2)
         
         self.run_btn = self.create_toolbar_button(self.toolbar, "▶️ Run", self.start_minion_conversation)
         self.run_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        self.save_btn = self.create_toolbar_button(self.toolbar, "💾 Save", self.save_conversation)
+        self.save_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        self.help_btn = self.create_toolbar_button(self.toolbar, "❓ Help", self.show_help)
+        self.help_btn.pack(side=tk.RIGHT, padx=5, pady=2)
         
         # Create output text area with syntax highlighting and line numbers
         self.output_frame = tk.Frame(self.main_frame, bg=TerminalTheme.PANEL_COLOR)
@@ -259,16 +300,34 @@ class MinionTerminal:
         self.output_text.tag_configure("error", foreground="#FF5555")
         self.output_text.tag_configure("highlight", background="#44475A", foreground="#F8F8F2")
         
+        # Enhanced styling for thinking messages
+        self.output_text.tag_configure(
+            "supervisor_thinking", 
+            foreground=TerminalTheme.SUPERVISOR_COLOR,
+            font=(TerminalTheme.FONT_FAMILY, TerminalTheme.FONT_SIZE+1, "bold"),
+            background="#2a2a42"  # Subtle background highlight
+        )
+        
+        self.output_text.tag_configure(
+            "worker_thinking", 
+            foreground=TerminalTheme.WORKER_COLOR,
+            font=(TerminalTheme.FONT_FAMILY, TerminalTheme.FONT_SIZE+1, "bold"),
+            background="#2a3a2a"  # Subtle background highlight
+        )
+        
+        self.output_text.tag_configure("user_message", foreground="#2ecc71")
+        self.output_text.tag_configure("ai_message", foreground="#3498db")
+        
         # Initialize ANSI colorizer
         self.colorizer = AnsiColorizer(self.output_text)
         
-        # Create input area with prompt
+        # Create input area with improved styling
         self.input_frame = tk.Frame(self.main_frame, bg=TerminalTheme.BG_COLOR)
         self.input_frame.pack(fill=tk.X, pady=(5, 0))
         
         self.prompt_label = tk.Label(
             self.input_frame,
-            text="$ ",
+            text="💬 ",  # Chat bubble icon
             font=(TerminalTheme.FONT_FAMILY, TerminalTheme.FONT_SIZE, "bold"),
             fg=TerminalTheme.ACCENT_COLOR,
             bg=TerminalTheme.BG_COLOR,
@@ -307,10 +366,10 @@ class MinionTerminal:
         self.text_entry.bind("<FocusOut>", on_text_focus_out)
         self.text_entry.bind("<Return>", lambda e: self.send_message() if not (e.state & 0x0001) else None)
         
-        # Create send button
+        # Create send button with improved styling
         self.send_btn = tk.Button(
             self.input_frame,
-            text="Send",
+            text="📤 Send",  # Added send icon
             font=(TerminalTheme.FONT_FAMILY, TerminalTheme.FONT_SIZE),
             bg=TerminalTheme.BUTTON_BG,
             fg=TerminalTheme.TEXT_COLOR,
@@ -489,8 +548,46 @@ class MinionTerminal:
                 try:
                     output = output_queue.get(block=False)
                     
-                    # Update the UI from the main thread
-                    self.root.after(0, lambda text=output: self.colorizer.apply_ansi_colors(text))
+                    # Check for special thinking messages with ANSI color codes
+                    supervisor_pattern = r'Supervisor \(Remote\) is thinking\.\.\.'
+                    worker_pattern = r'★ Worker \(Local\) is thinking\.\.\. ★'
+                    
+                    # Clean ANSI codes for detection and display
+                    clean_output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
+                    
+                    if re.search(supervisor_pattern, clean_output):
+                        # Start thinking animation if not already running
+                        if not self.thinking_animation_active:
+                            self.thinking_animation_active = True
+                            self.thinking_dots_count = 0
+                            self.root.after(0, lambda: self.update_thinking_animation("supervisor"))
+                        
+                        # Display supervisor thinking message with enhanced styling
+                        self.root.after(0, lambda: self.display_thinking_message(
+                            "Supervisor (Remote) is thinking...", 
+                            "supervisor_thinking"
+                        ))
+                    elif re.search(worker_pattern, clean_output):
+                        # Start thinking animation if not already running
+                        if not self.thinking_animation_active:
+                            self.thinking_animation_active = True
+                            self.thinking_dots_count = 0
+                            self.root.after(0, lambda: self.update_thinking_animation("worker"))
+                        
+                        # Display worker thinking message with enhanced styling
+                        self.root.after(0, lambda: self.display_thinking_message(
+                            "★ Worker (Local) is thinking... ★", 
+                            "worker_thinking"
+                        ))
+                    else:
+                        # Normal output, use regular colorizer
+                        self.root.after(0, lambda text=output: self.colorizer.apply_ansi_colors(text))
+                        
+                        # If we get normal output, stop the thinking animation
+                        self.thinking_animation_active = False
+                    
+                    # Auto-scroll to see the latest output
+                    self.root.after(0, lambda: self.output_text.see(tk.END))
                     
                 except queue.Empty:
                     pass  # Queue is empty, continue
@@ -502,6 +599,18 @@ class MinionTerminal:
                 
     def send_message(self):
         """Send the message to be processed"""
+        # Get the text from the input field
+        message = self.text_entry.get("1.0", "end-1c").strip()
+        if message == "Type a message..." or not message:
+            return
+            
+        # Add the user message to the output with styling
+        self.output_text.insert(tk.END, f"You: {message}\n", "user_message")
+        self.output_text.see(tk.END)
+        
+        # Add to conversation history
+        self.conversation_history.append({"role": "user", "content": message})
+        
         # Start the minion conversation with the current input
         self.start_minion_conversation()
     
@@ -516,6 +625,139 @@ class MinionTerminal:
         self.line_numbers.config(state=tk.NORMAL)
         self.line_numbers.delete("1.0", tk.END)
         self.line_numbers.config(state=tk.DISABLED)
+
+    def save_conversation(self):
+        """Save the current conversation to a file"""
+        try:
+            from tkinter import filedialog
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save Conversation"
+            )
+            
+            if file_path:
+                with open(file_path, "w", encoding="utf-8") as file:
+                    file.write(self.output_text.get("1.0", tk.END))
+                
+                self.update_status(f"Conversation saved to {file_path}", TerminalTheme.SUCCESS_COLOR)
+        except Exception as e:
+            self.update_status(f"Error saving: {str(e)}", TerminalTheme.ERROR_COLOR)
+    
+    def show_help(self):
+        """Show help information"""
+        help_text = """
+🤖 Minions AI Terminal Help
+
+- Type your message in the input box and press Send or Enter
+- The AI will process your message and respond
+- Special thinking messages will be highlighted in special colors
+- Use toolbar buttons to clear, run, or save conversations
+
+Example commands:
+- Ask questions directly
+- Request the AI to perform tasks
+- Have conversations with the AI assistant
+
+Tips:
+- Press Ctrl+Enter to add a new line without sending
+- Clear the output window to start a fresh conversation
+        """
+        
+        # Create a popup window
+        help_window = tk.Toplevel(self.root)
+        help_window.title("Help - Minions AI Terminal")
+        help_window.geometry("500x400")
+        help_window.configure(bg=TerminalTheme.BG_COLOR)
+        
+        # Add help text
+        help_text_widget = scrolledtext.ScrolledText(
+            help_window,
+            wrap=tk.WORD,
+            padx=10,
+            pady=10,
+            bg=TerminalTheme.BG_COLOR,
+            fg=TerminalTheme.TEXT_COLOR,
+            font=(TerminalTheme.FONT_FAMILY, TerminalTheme.FONT_SIZE),
+            bd=0,
+            highlightthickness=0
+        )
+        help_text_widget.pack(fill=tk.BOTH, expand=True)
+        help_text_widget.insert(tk.END, help_text)
+        help_text_widget.configure(state=tk.DISABLED)
+
+    def display_thinking_message(self, message, tag):
+        """Display thinking message with enhanced styling"""
+        # Find and delete previous thinking message (if any)
+        start_index = "1.0"
+        while True:
+            pos = self.output_text.search(message.split("...")[0], start_index, tk.END)
+            if not pos:
+                break
+            
+            line = self.output_text.get(pos, pos + " lineend")
+            if message.split("...")[0] in line:
+                self.output_text.delete(pos, pos + " lineend+1c")
+            
+            start_index = pos + "+1c"
+        
+        # Insert the thinking message with the appropriate tag
+        self.output_text.insert(tk.END, message + "\n", tag)
+        self.output_text.see(tk.END)
+    
+    def update_thinking_animation(self, mode):
+        """Update the animated dots for thinking messages"""
+        if not self.thinking_animation_active:
+            return
+            
+        # Define tag based on mode
+        tag = "supervisor_thinking" if mode == "supervisor" else "worker_thinking"
+        
+        # Base message text
+        if mode == "supervisor":
+            base_msg = "Supervisor (Remote) is thinking"
+        else:
+            base_msg = "★ Worker (Local) is thinking"
+        
+        # Update dots animation
+        self.thinking_dots_count = (self.thinking_dots_count + 1) % 4
+        dots = "." * self.thinking_dots_count + " " * (3 - self.thinking_dots_count)
+        
+        # Complete message
+        if mode == "supervisor":
+            message = f"{base_msg}{dots}"
+        else:
+            message = f"{base_msg}{dots} ★"
+        
+        # Find and update existing message
+        start_index = "1.0"
+        updated = False
+        
+        while True and not updated:
+            pos = self.output_text.search(base_msg, start_index, tk.END)
+            if not pos:
+                break
+                
+            line_end = self.output_text.index(f"{pos} lineend")
+            self.output_text.delete(pos, line_end)
+            self.output_text.insert(pos, message, tag)
+            updated = True
+            
+            start_index = pos + "+1c"
+        
+        # If message wasn't found, add it
+        if not updated:
+            self.output_text.insert(tk.END, message + "\n", tag)
+            self.output_text.see(tk.END)
+        
+        # Continue animation if still active
+        if self.thinking_animation_active:
+            self.root.after(300, lambda: self.update_thinking_animation(mode))
+            
+    # Add a method to stop thinking animation
+    def stop_thinking_animation(self):
+        """Stop the thinking animation"""
+        self.thinking_animation_active = False
 
 if __name__ == "__main__":
     # Create and run the application

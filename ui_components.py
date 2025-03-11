@@ -179,7 +179,7 @@ class UIComponents:
         app.avatar_canvas.create_text(
             avatar_size//2, 
             avatar_size//2, 
-            text=emoji, 
+            text="RL", 
             font=("Segoe UI Emoji", 24)
         )
         
@@ -206,8 +206,8 @@ class UIComponents:
         # Add model name with status indicator
         name_label = tk.Label(
             status_frame, 
-            text=f"{app.model_label} {status}", 
-            font=("Segoe UI", 14, "bold"), 
+            text=f"SUPERVISOR (Remote)", 
+            font=("Arial", 14, "bold"), 
             fg=UIComponents.TEXT_COLOR, 
             bg=UIComponents.PANEL_BG
         )
