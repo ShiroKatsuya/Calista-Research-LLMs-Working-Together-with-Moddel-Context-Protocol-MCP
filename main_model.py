@@ -35,11 +35,14 @@ def main(task):
     - LOCAL MODEL : Worker role, model ID "Worker", using deepseek-r1:1.5b
     - REMOTE MODEL: Supervisor role, model ID "Supervisor", using llama3.2:3b
 
-    COMMUNICATION RULES:
-    1. Always begin messages to the other agent with their ID (e.g., "@Supervisor: " or "@Worker: ")
-    2. Keep messages concise (under 100 characters) but informative enough to collaborate
-    3. Use casual, natural language like humans do, with simple terms and occasional typos
-    4. For specific requests, use JSON format: {"request":"action","data":"value"}
+    COMMUNICATION PROTOCOL:
+    1. You are the LOCAL MODEL with the ID "Worker"
+    2. You are communicating with a REMOTE MODEL with the ID "Supervisor"
+    3. ALWAYS start your messages with "@Supervisor: " when responding
+    4. When you receive messages, they will start with "@Worker: "
+    5. For specific requests, you can use JSON format: {{"request":"action","data":"value"}}
+    6. When you reach a conclusion or have a final answer, indicate with: {{"status":"complete","answer":"your solution"}}
+
 
     COLLABORATION PROTOCOL:
     1. Listen for messages prefixed with your ID
@@ -58,7 +61,7 @@ def main(task):
     output = minion(
         task=task,
         context=[context],
-        max_rounds=5
+        max_rounds=1000
     )
 
     # Define ANSI color codes for terminal output

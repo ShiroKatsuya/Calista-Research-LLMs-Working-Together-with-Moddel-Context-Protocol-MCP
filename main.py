@@ -4,7 +4,7 @@ import argparse
 # from voice import voice
 import sys
 from typing import Dict, Any, Set
-
+from websitecall import contexts
 
 
 
@@ -31,7 +31,7 @@ def main(task: str = None) -> None:
             pass
         args = Args()
         args.task = task or "Tell me about the Fermi Paradox and why we haven't found alien life yet."
-        args.full_messages = getattr(parser.parse_args([]), 'full_messages', False)
+        args.full_messages = True  # Default to full messages
         args.no_color = getattr(parser.parse_args([]), 'no_color', False)
 
     # Use the task from args
@@ -51,26 +51,7 @@ def main(task: str = None) -> None:
     # Instantiate the Minion object with both clients
     minion = Minion(local_client, remote_client)
 
-    context = """
-    You are participating in a two-agent AI collaboration system with these roles:
-    - LOCAL MODEL : Worker role, model ID "Worker", using deepseek-r1:1.5b
-    - REMOTE MODEL: Supervisor role, model ID "Supervisor", using llama3.2:3b
-
-    COMMUNICATION RULES:
-    1. Always begin messages to the other agent with their ID (e.g., "@Supervisor: " or "@Worker: ")
-    2. Keep messages concise (under 100 characters) but informative enough to collaborate
-    3. Use casual, natural language like humans do, with simple terms and occasional typos
-    4. For specific requests, use JSON format: {"request":"action","data":"value"}
-
-    COLLABORATION PROTOCOL:
-    1. Listen for messages prefixed with your ID
-    2. Acknowledge received messages briefly
-    3. Focus on solving the task through iterative exchanges
-    4. Share your thinking process and reasoning when relevant
-    5. When reaching consensus on the task, indicate with: {"status":"complete","answer":"your solution"}
-
-    Remember that you're working as a team to solve the given task, and neither agent has complete information alone.
-    """
+    context = contexts()
 
     # Execute the minion protocol for up to five communication rounds
     output = minion(
@@ -78,6 +59,8 @@ def main(task: str = None) -> None:
         context=[context],
         max_rounds=5
     )
+
+    print(context)
 
     # Display the conversation using the formatted output
     display_conversation(output, args)
@@ -110,32 +93,34 @@ def colorize(text: str, color: str) -> str:
 
 
 def clean_content(content: str) -> str:
-    """Remove Task and Instructions sections from message content.
+    # """Remove Task and Instructions sections from message content.
     
-    Args:
-        content: The raw message content
+    # Args:
+    #     content: The raw message content
         
-    Returns:
-        Cleaned content with sections removed
-    """
-    lines = content.split('\n')
-    cleaned_lines = []
-    skip_section = False
+    # Returns:
+    #     Cleaned content with sections removed
+    # """
+    # lines = content.split('\n')
+    # cleaned_lines = []
+    # skip_section = False
     
-    for line in lines:
-        if line.strip().startswith('### Task') or line.strip().startswith('### Instructions'):
-            skip_section = True
-        elif line.strip().startswith('###'):
-            skip_section = False
-            cleaned_lines.append(line)
-        elif line.strip().startswith('```json'):
-            skip_section = True
-        elif line.strip().startswith('```') and skip_section:
-            skip_section = False
-        elif not skip_section:
-            cleaned_lines.append(line)
+    # for line in lines:
+    #     if line.strip().startswith('### Task') or line.strip().startswith('### Instructions'):
+    #         skip_section = True
+    #     elif line.strip().startswith('###'):
+    #         skip_section = False
+    #         cleaned_lines.append(line)
+    #     elif line.strip().startswith('```json'):
+    #         skip_section = True
+    #     elif line.strip().startswith('```') and skip_section:
+    #         skip_section = False
+    #     elif not skip_section:
+    #         cleaned_lines.append(line)
             
-    return '\n'.join(cleaned_lines)
+    # return '\n'.join(cleaned_lines)
+
+    return content
 
 
 def truncate_content(content: str, max_length: int, full_messages: bool) -> str:

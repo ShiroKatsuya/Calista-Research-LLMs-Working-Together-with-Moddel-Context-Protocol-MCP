@@ -109,9 +109,8 @@ Be proactive in asking specific questions when you need more information or guid
 2. You are communicating with a REMOTE MODEL with the ID "Supervisor"
 3. ALWAYS start your messages with "@Supervisor: " when responding
 4. When you receive messages, they will start with "@Worker: "
-5. Use casual, natural language but keep messages concise (under 100 characters when possible)
-6. For specific requests, you can use JSON format: {{"request":"action","data":"value"}}
-7. When you reach a conclusion or have a final answer, indicate with: {{"status":"complete","answer":"your solution"}}
+5. For specific requests, you can use JSON format: {{"request":"action","data":"value"}}
+6. When you reach a conclusion or have a final answer, indicate with: {{"status":"complete","answer":"your solution"}}
 
 Remember:
 1. You can both answer AND ask questions - this is a two-way conversation
