@@ -19,6 +19,25 @@ from website_tools.extract_keywords_from_texts import extract_keywords_from_text
 from website_tools.generate_summarys import generate_summary
 from website_tools.format_contents import format_content
 from website_tools.extract_bibliographic_infos import extract_bibliographic_info
+# from main import colorize
+# from main import Colors
+
+class Colors:
+    """ANSI color codes for terminal output formatting."""
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+
+def colorize(text: str, color: str) -> str:
+    if getattr(colorize, 'no_color', False):
+        return text
+    return color + text + Colors.END
+
 # import nltk
 # try:
 #     nltk.data.find('tokenizers/punkt')
@@ -29,7 +48,7 @@ from website_tools.extract_bibliographic_infos import extract_bibliographic_info
 os.environ["GOOGLE_CSE_ID"] = "5650b4d81ac344bd8"
 google_api1 = "AIzaSyAsaqSFC6hQrSpUhZTkt1GhCyNcw-StC7A"
 google_api2 = "AIzaSyBEl28l8XlkhYWxCkGamWLAWW2Jfc3SJR0"
-GOOGLE_API_KEY = google_api1
+GOOGLE_API_KEY = google_api2
 os.environ["USER_AGENT"] = "jfE7aT4JW0dDcqCLyoiVfQ==kblDif2SgvOKHDhQ"
 def extract_text_from_document_url(url, query):
     try:
@@ -94,7 +113,7 @@ def filter_relevant_content(content, query, threshold=0.15, max_paragraphs=10):
 
     combined_keywords = [kw for kw in combined_keywords if len(kw) > 2]
     
-    print(f"Automatically extracted keywords for filtering: {', '.join(combined_keywords)}")
+    print(f"\n\n  ➡️  {colorize(f'Automatically extracted keywords for filtering: {', '.join(combined_keywords)}', Colors.YELLOW)}")
 
     relevant_paragraphs = []
     for p, score in scored_paragraphs:
@@ -142,10 +161,10 @@ def search_and_load(query):
             # Extract text based on document type (PDF, Word, HTML, etc.)
             content, doc_type, is_academic = extract_text_from_document_url(url, query)
             
-            # Skip empty or very short content
-            if not content or len(content) < 50:
-                print(f"Skipping {url}: insufficient content")
-                continue
+            # # Skip empty or very short content
+            # if not content or len(content) < 50:
+            #     print(f"Skipping {url}: insufficient content")
+            #     continue
                 
             # Get paragraph scores for highlighting
             paragraphs = re.split(r'\n\s*\n', content)
