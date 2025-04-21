@@ -5,6 +5,14 @@ import argparse
 import sys
 from typing import Dict, Any, Set
 from websitetools import runs, print_formatted_results
+# from utils import mount_drive
+# from model_utils import get_appropriate_model_name, load_base_model
+# from data_utils import load_dataset_for_training
+# from nas import NeuralArchitectureSearch
+# from nas_evaluate import evaluate_architecture
+# from nas_evolve import evolve_population
+import importlib
+import os
 
 
 
@@ -53,13 +61,13 @@ def main(task: str = None) -> None:
 
     # Configure the clients with appropriate parameters
     local_client = OllamaClient(
-        model_name="llama3.2:1b",
-        temperature=0.2,  # Lower temperature for more deterministic outputs
+        model_name="llama3.2:3b",
+
     )
         
     remote_client = OllamaClient(
-        model_name="llama3.2:3b",
-        temperature=0.1,  # Lower temperature for more structured outputs
+        model_name="calista_nas",
+
     )
 
     # Instantiate the Minion object with both clients
@@ -69,8 +77,8 @@ def main(task: str = None) -> None:
 
     context = """
     You are participating in a two-agent AI collaboration system with these roles:
-    - LOCAL MODEL : Worker role, model ID "Worker", using deepseek-r1:1.5b
-    - REMOTE MODEL: Supervisor role, model ID "Supervisor", using llama3.2:3b
+    - LOCAL MODEL : Worker role, model ID "Worker"
+    - REMOTE MODEL: Supervisor role, model ID "Supervisor"
 
     COMMUNICATION RULES:
     1. Always begin messages to the other agent with their ID (e.g., "@Supervisor: " or "@Worker: ")
@@ -346,6 +354,81 @@ def process_supervisor_answer(supervisor_messages, idx, used_answers, full_messa
     return False
 
 
+def run_nas_optimization():
+    """Main function to run the Neural Architecture Search optimization"""
+    print("Starting Neural Architecture Search process...")
+
+    # Set up directory for saving
+    save_dir = mount_drive()
+
+    # Get appropriate model based on available GPU
+    model_name = get_appropriate_model_name()
+    print(f"Using model: {model_name}")
+
+    # Load dataset
+    dataset = load_dataset_for_training()
+    print(f"Dataset loaded with {len(dataset)} examples")
+
+    # Initialize NAS
+    nas_optimizer = NeuralArchitectureSearch(
+        base_model_name=model_name,
+        dataset=dataset,
+        save_dir=save_dir
+    )
+
+    # Dynamically add methods to the NAS class
+    setattr(NeuralArchitectureSearch, 'evaluate_architecture', evaluate_architecture)
+    setattr(NeuralArchitectureSearch, 'evolve_population', evolve_population)
+
+    # Add global constants to the instance
+    nas_optimizer.max_seq_length = 2048
+    nas_optimizer.dtype = None
+    nas_optimizer.load_in_4bit = True
+
+    # Run with smaller population and generations for Colab
+    population_size = 4  # Smaller population for Colab
+    num_generations = 2  # Fewer generations for Colab
+
+    # Initialize population and run evolution
+    nas_optimizer.initialize_population(population_size=population_size)
+    best_config = nas_optimizer.evolve_population(num_generations=num_generations)
+
+    # Check if a valid best configuration was found
+    if best_config is None:
+        print("No valid architecture configuration was found. Using default configuration.")
+        # Create a default configuration as fallback
+        best_config = {
+            "r": 16,
+            "lora_alpha": 16,
+            "lora_dropout": 0.05,
+            "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
+                              "gate_proj", "up_proj", "down_proj"],
+            "use_rslora": False,
+        }
+        nas_optimizer.best_architecture = best_config
+        nas_optimizer.best_score = float('inf')
+        nas_optimizer.save_checkpoint()
+
+    print(f"Best architecture found: {best_config}")
+    print(f"Best evaluation score: {nas_optimizer.best_score}")
+
+    # Train the final model with the best architecture
+    # Use fewer steps for Colab to avoid timeouts
+    train_final_model = importlib.import_module("nas_train_final").train_final_model
+    setattr(NeuralArchitectureSearch, 'train_final_model', train_final_model)
+    
+    final_model, final_tokenizer, train_results = nas_optimizer.train_final_model(best_config, full_training_steps=40)
+
+    if train_results:
+        print("Neural Architecture Search completed successfully!")
+        print(f"Final training loss: {train_results.training_loss}")
+        print(f"Model saved to {os.path.join(save_dir, 'nas_final_model')}")
+    else:
+        print("Neural Architecture Search completed but final training failed.")
+        print(f"Best architecture configuration saved to {os.path.join(save_dir, 'nas_checkpoint.pkl')}")
+
+
 if __name__ == "__main__":
     # Run the main function (argument parsing happens inside main)
     main()
+    run_nas_optimization()

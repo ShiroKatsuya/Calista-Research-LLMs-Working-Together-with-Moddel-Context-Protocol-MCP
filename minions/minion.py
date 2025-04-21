@@ -487,9 +487,9 @@ class Minion:
             print("\n")
 
             # # Process supervisor response
-            # if supervisor_response and supervisor_response[0]:
-            #     from voice import voice
-            #     voice(supervisor_response[0])
+            if supervisor_response and supervisor_response[0]:
+                from voice import voice
+                voice(supervisor_response[0])
             
             return supervisor_response, supervisor_usage
         except Exception as e:
@@ -782,9 +782,9 @@ class Minion:
             )
             
             # Send the full worker response to voice output
-            # if worker_response and worker_response[0]:
-            #     from voice import voice
-            #     voice(worker_response[0])
+            if worker_response and worker_response[0]:
+                from voice import voice
+                voice(worker_response[0])
             
             # Check for worker follow-up questions
             had_followup, followup_usage = self._handle_worker_follow_up(

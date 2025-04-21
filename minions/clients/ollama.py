@@ -12,9 +12,9 @@ class OllamaClient:
     def __init__(
         self,
         model_name: str = None,
-        temperature: float = 0.0,
-        max_tokens: int = 2048,
-        num_ctx: int = 4096,
+        temperature: float = None,
+        max_tokens: int = None,
+        num_ctx: int = None,
         structured_output_schema: Optional[BaseModel] = None,
         use_async: bool = False,
     ):
